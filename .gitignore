@@ -1,0 +1,14 @@
+# Live credentials. .env.example is the template that IS committed.
+.env
+
+__pycache__/
+*.pyc
+*.log
+
+# Generated briefs -- reproducible, and they contain recipient names.
+output*/
+!sample_output/
+
+# Local database. Ships once with the bundle; do not track further changes.
+*.db-journal
+*.db-wal

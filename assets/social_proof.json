@@ -1,0 +1,755 @@
+{
+  "_note": "Real published CMI clients from coherentmarketinsights.com/testimonials, grouped by broad vertical. social_proof.py serves only the vertical matching the client, rotates which quotes appear (seeded by company name), and serves nothing when the vertical is unclear. Never add an entry that is not a verified CMI client.",
+  "certifications": [
+    {
+      "src": "https://www.coherentmarketinsights.com/images/credit-img/iso-9001-updated.webp",
+      "alt": "ISO 9001:2015 certified"
+    },
+    {
+      "src": "https://www.coherentmarketinsights.com/images/credit-img/iso-27001-updated.webp",
+      "alt": "ISO 27001:2022 certified"
+    },
+    {
+      "src": "https://www.coherentmarketinsights.com/images/credit-img/esomar2026.avif",
+      "alt": "ESOMAR member 2026"
+    },
+    {
+      "src": "https://www.coherentmarketinsights.com/images/credit-img/duns-registered.webp",
+      "alt": "D-U-N-S Registered"
+    },
+    {
+      "src": "https://www.coherentmarketinsights.com/images/credit-img/clutupdatednew.webp",
+      "alt": "Clutch"
+    },
+    {
+      "src": "https://www.coherentmarketinsights.com/images/Trustpilot-27.webp",
+      "alt": "Trustpilot"
+    }
+  ],
+  "verticals": {
+    "life_sciences": {
+      "logos": [
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Pfizer.png",
+          "alt": "Pfizer"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Baxter.jpg",
+          "alt": "Baxter"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/BD.png",
+          "alt": "BD"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Sartorius.png",
+          "alt": "Sartorius"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Otsuka-Pharmaceutical.png",
+          "alt": "Otsuka Pharmaceutical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/terumo-medical-corporation-usa.jpg",
+          "alt": "Terumo Medical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/olympus-europa-se-and-co-kg.jpg",
+          "alt": "Olympus Europa"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/NIHON-KOHDEN.png",
+          "alt": "Nihon Kohden"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/nuvasive-inc.jpg",
+          "alt": "NuVasive"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/PHC_Corporation.png",
+          "alt": "PHC Corporation"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/crinetics-logo.jpg",
+          "alt": "Crinetics Pharmaceuticals"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Aeon-Biopharma.jpg",
+          "alt": "Aeon Biopharma"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/kxn-logo.png",
+          "alt": "CanSinoBIO"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/OncolysU_SA.png",
+          "alt": "Oncolys USA"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/TWi_Biotech.png",
+          "alt": "TWi Biotech"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/vivia-biotech-sl.jpg",
+          "alt": "Vivia Biotech"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Hartford_HealthCare.png",
+          "alt": "Hartford HealthCare"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Akershus_University_Hospital.png",
+          "alt": "Akershus University Hospital"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/logo_kuraray.jpg",
+          "alt": "Kuraray Noritake Dental"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Beurer.jpg",
+          "alt": "Beurer"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/taro.jpg",
+          "alt": "Taro Pharmaceutical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Allergy.jpg",
+          "alt": "Allergy Therapeutics"
+        }
+      ],
+      "testimonials": [
+        {
+          "quote": "Thank you for providing me the report on Global Oncolytic Therapy Market. I am pleased with the final product. I also appreciate your customer service to assure satisfaction with your products.",
+          "role": "President",
+          "company": "Oncolys USA, Inc.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/OncolysU_SA.png"
+        },
+        {
+          "quote": "The service and data quality is great. We appreciate the quality and I have already shared my opinion in the team. I think our data management team will also look for opportunities to work with you.",
+          "role": "Business Strategy, Pharmaceutical Division",
+          "company": "Otsuka Pharmaceutical Co., Ltd.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Otsuka-Pharmaceutical.png"
+        },
+        {
+          "quote": "The report shared by CMI is good, for what my opinion is worth. Thanks a ton! It is very helpful for my team and organization.",
+          "role": "Market Intelligence Manager",
+          "company": "Sartorius",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Sartorius.png"
+        },
+        {
+          "quote": "I got the previous version in 2020 and found it helpful.",
+          "role": "Sr. Global Marketing Manager",
+          "company": "BD",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/BD.png"
+        },
+        {
+          "quote": "Thank you for your email. Very valuable information!",
+          "role": "Research Analysts",
+          "company": "Hartford HealthCare",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Hartford_HealthCare.png"
+        },
+        {
+          "quote": "Thank you very much for your report which is informative.",
+          "role": "General Manager",
+          "company": "PHC Corporation",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/PHC_Corporation.png"
+        },
+        {
+          "quote": "Thank you for the prompt responses, very helpful.",
+          "role": "Business Strategy Associate",
+          "company": "Crinetics Pharmaceuticals",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/crinetics-logo.jpg"
+        },
+        {
+          "quote": "We were able to get very useful information.",
+          "role": "Planning & Development Department",
+          "company": "Kuraray Noritake Dental Inc.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/logo_kuraray.jpg"
+        },
+        {
+          "quote": "We are enjoying working with your report.",
+          "role": "MD, PhD",
+          "company": "Akershus University Hospital",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Akershus_University_Hospital.png"
+        }
+      ]
+    },
+    "consumer": {
+      "logos": [
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Ajinomoto.png",
+          "alt": "Ajinomoto"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/KAGOME.png",
+          "alt": "Kagome"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Haier.png",
+          "alt": "Haier"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/AMOREPACIFIC.png",
+          "alt": "Amorepacific"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Richs_Product.png",
+          "alt": "Rich's Products"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/cropped-IFFCO.jpg",
+          "alt": "IFFCO Group"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Typhoo_India.jpg",
+          "alt": "Typhoo India"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Beauty%20Lead%2C%20Amazon.png",
+          "alt": "Amazon"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/APTAR.png",
+          "alt": "Aptar"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Aptar_Beauty%20%281%29.jpg",
+          "alt": "Aptar Beauty"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Rigid%20Plastic%2C%20LACTALIS.png",
+          "alt": "Lactalis"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Grow%20Up%20Group%20Limited.jpg",
+          "alt": "Grow Up Group"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Nutronco.jpg",
+          "alt": "Nutronco"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/omega-protein-corporation-usa.jpg",
+          "alt": "Omega Protein"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/cdm-kout-food-group-kuwait.jpg",
+          "alt": "Kout Food Group"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/future-cosmetics-cc-south-africa.jpg",
+          "alt": "Future Cosmetics"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/TENA-Skincare.png",
+          "alt": "TENA Skincare"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/firskind.jpg",
+          "alt": "FirstKind"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/samsung.jpg",
+          "alt": "Samsung Electronics America"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/viewsoniclogo.png",
+          "alt": "ViewSonic"
+        }
+      ],
+      "testimonials": [
+        {
+          "quote": "I have been through the PET preform report. Very insightful.",
+          "role": "Global Purchasing, Rigid Plastic",
+          "company": "LACTALIS",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Rigid%20Plastic%2C%20LACTALIS.png"
+        },
+        {
+          "quote": "Thank you for your comprehensive feedback. Professional.",
+          "role": "General Manager, Commercial Washing Machine Division",
+          "company": "Haier",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Haier.png"
+        },
+        {
+          "quote": "We would like to tell you that your response was valuable.",
+          "role": "International Business Specialist",
+          "company": "Ajinomoto Co., Inc.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Ajinomoto.png"
+        },
+        {
+          "quote": "I have reviewed the report you sent. It seems very helpful.",
+          "role": "Clinical Lab Manager",
+          "company": "AMOREPACIFIC",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/AMOREPACIFIC.png"
+        },
+        {
+          "quote": "Thank you for additional information. Very insightful.",
+          "role": "President",
+          "company": "KAGOME Co. Ltd",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/KAGOME.png"
+        },
+        {
+          "quote": "Thank you for the report. It looks fantastic.",
+          "role": "Product Management Director",
+          "company": "Grow Up Group Limited",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Grow%20Up%20Group%20Limited.jpg"
+        },
+        {
+          "quote": "Thanks for the clarification and comprehensive consideration.",
+          "role": "Sr. Marketing Manager",
+          "company": "Rich's Products",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Richs_Product.png"
+        },
+        {
+          "quote": "Please convey my regards to your research team.",
+          "role": "Director Strategy & Business Analysis, Beauty Global",
+          "company": "APTAR",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/APTAR.png"
+        },
+        {
+          "quote": "The report gave very good info by sector.",
+          "role": "Operations Executive",
+          "company": "Future Cosmetics CC",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/future-cosmetics-cc-south-africa.jpg"
+        }
+      ]
+    },
+    "technology": {
+      "logos": [
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/HP.png",
+          "alt": "HP"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/samsung.jpg",
+          "alt": "Samsung Electronics America"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/hcl.jpg",
+          "alt": "HCL Technologies"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Panasonic_Industry.png",
+          "alt": "Panasonic Industry"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/viewsoniclogo.png",
+          "alt": "ViewSonic"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/caldigit.png",
+          "alt": "CalDigit"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Autosilicon%20Inc..png",
+          "alt": "Autosilicon"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/TOKYO.png",
+          "alt": "Tokyo Weld"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Mobile_TeleSystems.png",
+          "alt": "Mobile TeleSystems"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Tempo%20Communication.png",
+          "alt": "Tempo Communications"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/thinknum-alternative-data-new-york-usa.jpg",
+          "alt": "Thinknum"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/FlowCentric_Management_Team.png",
+          "alt": "FlowCentric"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/BlueRush.png",
+          "alt": "BlueRush"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/quantumsystech.jpg",
+          "alt": "QuantumSys Technologies"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/iolight-limited.jpg",
+          "alt": "ioLight"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/kapsch-srl-romania.jpg",
+          "alt": "Kapsch"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/NTZNS_logo.jpg",
+          "alt": "NTZNS"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/centaur-robotics-limited-uk.jpg",
+          "alt": "Centaur Robotics"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/arktect-brazil.jpg",
+          "alt": "Arktect"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/ApplyBoard_Inc.png",
+          "alt": "ApplyBoard"
+        }
+      ],
+      "testimonials": [
+        {
+          "quote": "I really appreciate the extra effort by your team.",
+          "role": "Manager, Marketing Programs Strategy, Research & Intelligence",
+          "company": "HP Specialty Printing and Technology Solutions",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/HP.png"
+        },
+        {
+          "quote": "CMI's report has excellent contents. Services appreciated.",
+          "role": "Senior Director",
+          "company": "Samsung Electronics America",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/samsung.jpg"
+        },
+        {
+          "quote": "I appreciate your great support in the Si-lens market.",
+          "role": "Manager",
+          "company": "Panasonic Industry Co., Ltd.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Panasonic_Industry.png"
+        },
+        {
+          "quote": "I have gone through the report and Excel. They look good.",
+          "role": "VP Strategy",
+          "company": "CalDigit",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/caldigit.png"
+        },
+        {
+          "quote": "Thank you for the report. I appreciate the effort of your team.",
+          "role": "Product Line Manager",
+          "company": "Tempo Communications",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Tempo%20Communication.png"
+        },
+        {
+          "quote": "Thank you for the report. It has been really insightful.",
+          "role": "Director",
+          "company": "FlowCentric Management Team",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/FlowCentric_Management_Team.png"
+        },
+        {
+          "quote": "Thank you for this well detailed report and follow-up.",
+          "role": "Marketing Director",
+          "company": "BlueRush",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/BlueRush.png"
+        },
+        {
+          "quote": "We received the report, and everything is fine. Thank you.",
+          "role": "Marketing and UX Research Department",
+          "company": "Mobile TeleSystems",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Mobile_TeleSystems.png"
+        },
+        {
+          "quote": "I received the draft of the EIS Market report well.",
+          "role": "Sales & Marketing Executive",
+          "company": "Autosilicon Inc.",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Autosilicon%20Inc..png"
+        }
+      ]
+    },
+    "industrial": {
+      "logos": [
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/abb.jpg",
+          "alt": "ABB Power Grids"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Safran_Group.png",
+          "alt": "Safran Group"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Hilti.png",
+          "alt": "Hilti"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/SKF_%20Australia_Pty_Ltd.png",
+          "alt": "SKF Australia"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Teijin-Limited.png",
+          "alt": "Teijin"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/SEKISUI.png",
+          "alt": "Sekisui Chemical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Mitsubishi_Chemical_Corporation.png",
+          "alt": "Mitsubishi Chemical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/KANSAI-PAINT.jpg",
+          "alt": "Kansai Paint"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/icl-corporate-israel.jpg",
+          "alt": "ICL Group"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/header-ineos-styrolution.jpg",
+          "alt": "INEOS Styrolution"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/momentive-performance-materials-inc.jpg",
+          "alt": "Momentive Performance Materials"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/hanwha-total-petrochemical.jpg",
+          "alt": "Hanwha Total Petrochemical"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Boston_Metal.png",
+          "alt": "Boston Metal"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/HALCOR.png",
+          "alt": "Halcor"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Koenig_%26_Bauer_Digital_%26_Webfed_AG_%26_Co.KG.png",
+          "alt": "Koenig & Bauer"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/BURKHARDTWEBER.png",
+          "alt": "Burkhardt+Weber"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/JTEKT.jpg",
+          "alt": "JTEKT Automotive"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/eDF_renouvelables.png",
+          "alt": "EDF Renewables"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/blade-energy-partners-usa.jpg",
+          "alt": "Blade Energy Partners"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/corteva-agriscience.jpg",
+          "alt": "Corteva"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/RAZEL-BEC.png",
+          "alt": "Razel-Bec"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Snorkel_Europe.png",
+          "alt": "Snorkel Europe"
+        }
+      ],
+      "testimonials": [
+        {
+          "quote": "Thank you for this effort and explanation.",
+          "role": "Head of New Digital Services",
+          "company": "Safran Group",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Safran_Group.png"
+        },
+        {
+          "quote": "Your study provided us with valuable insights into flexo.",
+          "role": "Product Management, Commercial",
+          "company": "Koenig & Bauer Digital & Webfed",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Koenig_%26_Bauer_Digital_%26_Webfed_AG_%26_Co.KG.png"
+        },
+        {
+          "quote": "I want to thank you for your amazing customer service.",
+          "role": "Supply Management Support, Business Unit Anchors",
+          "company": "Hilti Entwicklungsgesellschaft mbH",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Hilti.png"
+        },
+        {
+          "quote": "The market report is well-structured and extremely precise.",
+          "role": "Directeur du Developpement",
+          "company": "RAZEL-BEC",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/RAZEL-BEC.png"
+        },
+        {
+          "quote": "The attached report seems very interesting. Congratulations.",
+          "role": "Regional Sales Manager, North America",
+          "company": "BURKHARDT+WEBER",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/BURKHARDTWEBER.png"
+        },
+        {
+          "quote": "Thank you for the data shared by your team.",
+          "role": "President and CEO",
+          "company": "Teijin Limited",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Teijin-Limited.png"
+        },
+        {
+          "quote": "Thank you so much for the incredibly fast response.",
+          "role": "Director Supply Chain Management",
+          "company": "Boston Metal",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Boston_Metal.png"
+        },
+        {
+          "quote": "I am happy with your insights. Thank you for your work.",
+          "role": "Business Development Director",
+          "company": "Snorkel Europe Limited",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Snorkel_Europe.png"
+        },
+        {
+          "quote": "Thank you very much for your detailed comments.",
+          "role": "Market Development Manager",
+          "company": "INEOS Styrolution Europe GmbH",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/header-ineos-styrolution.jpg"
+        }
+      ]
+    },
+    "services": {
+      "logos": [
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/BCG.png",
+          "alt": "BCG"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/PwC-logo.jpg",
+          "alt": "PwC"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/deloitte-consulting-llp-usa.png",
+          "alt": "Deloitte Consulting"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/EY-Parthenon.png",
+          "alt": "EY-Parthenon"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/ARTHUR-D.png",
+          "alt": "Arthur D. Little"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/nielsen-holdings-plc.jpg",
+          "alt": "Nielsen"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Epsilon.png",
+          "alt": "Epsilon"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/SIGMAXYZ.png",
+          "alt": "SIGMAXYZ"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Industria-Partners.png",
+          "alt": "Industria Partners"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/The%20British%20Standards%20Institution.png",
+          "alt": "British Standards Institution"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Iowa_State_University.png",
+          "alt": "Iowa State University"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Kessler%20Topaz%20Meltzer%20Check%2C%20LLP.png",
+          "alt": "Kessler Topaz Meltzer & Check"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/America_%20Arbitration_Association.png",
+          "alt": "American Arbitration Association"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/amrop_logo_rgb.jpg",
+          "alt": "Amrop"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/flex-trade.jpg",
+          "alt": "FlexTrade"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/tcfn.jpg",
+          "alt": "TCF Inventory Finance"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Gracetree_Investments.png",
+          "alt": "Gracetree Investments"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/altran-deutschland-sas-and-co-kg.jpg",
+          "alt": "Altran Deutschland"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Lorenz-Logo-de.jpg",
+          "alt": "Lorenz & Partners"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/ignite-procurement-norway.jpg",
+          "alt": "Ignite Procurement"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/Paradigm%20Business%20Systems%2C%20LLC.png",
+          "alt": "Paradigm Business Systems"
+        },
+        {
+          "src": "https://www.coherentmarketinsights.com/images/testimg/GTIS_logo.png",
+          "alt": "Geotechnical Information Solutions"
+        }
+      ],
+      "testimonials": [
+        {
+          "quote": "Thank you for the accurate and useful data services.",
+          "role": "Associate Director",
+          "company": "BCG",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/BCG.png"
+        },
+        {
+          "quote": "The report was very insightful and interesting.",
+          "role": "Consultant",
+          "company": "Deloitte Consulting LLP",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/deloitte-consulting-llp-usa.png"
+        },
+        {
+          "quote": "Thanks for all the great work and quick turnaround last week.",
+          "role": "Manager",
+          "company": "EY-Parthenon",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/EY-Parthenon.png"
+        },
+        {
+          "quote": "Thank you for the detailed responses. Greatly appreciated.",
+          "role": "Strategy Consulting Senior Associate",
+          "company": "PwC",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/PwC-logo.jpg"
+        },
+        {
+          "quote": "The data provided by your team looks super insightful.",
+          "role": "Sr. Manager, Market & Competitive Intelligence",
+          "company": "Epsilon",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Epsilon.png"
+        },
+        {
+          "quote": "I just wanted to extend my sincere thanks to you and your team.",
+          "role": "Lead Investigator",
+          "company": "Kessler Topaz Meltzer & Check, LLP",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/Kessler%20Topaz%20Meltzer%20Check%2C%20LLP.png"
+        },
+        {
+          "quote": "We have the report and it has been very useful.",
+          "role": "SVP, Chief Development Officer",
+          "company": "American Arbitration Association",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/America_%20Arbitration_Association.png"
+        },
+        {
+          "quote": "Thank you! Safely received and it looks great.",
+          "role": "AI Market Development Analyst",
+          "company": "The British Standards Institution",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/The%20British%20Standards%20Institution.png"
+        },
+        {
+          "quote": "Thank you for submitting the requested data quickly.",
+          "role": "Business Analyst",
+          "company": "Arthur D. Little",
+          "logo": "https://www.coherentmarketinsights.com/images/testimg/ARTHUR-D.png"
+        }
+      ]
+    }
+  }
+}

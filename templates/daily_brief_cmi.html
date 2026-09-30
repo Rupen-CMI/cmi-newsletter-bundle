@@ -1,0 +1,309 @@
+{# ============================================================================
+   Coherent Market Insights · Market Signal Brief — TOKENIZED TEMPLATE (Jinja2)
+   ----------------------------------------------------------------------------
+   Design: cmi_brief_*_v2.html (CMI navy/green brand). Data contract: the SAME
+   `brief` dict produced by brief_builder.build_brief (tenant = the CLIENT company
+   the brief is prepared FOR). Sections:
+     1) Potential Customer  (outlook card)   2) Industry Outlook (stories)
+     3) Competition Outlook (outlook card)   + static "Inside CMI" panel
+   Slots ending in `_html` are rendered `| safe` (sanitized upstream); every other
+   string slot is plain text (Jinja autoescapes).
+   ============================================================================ #}
+{% set DEMO_URL = footer.cta_url | default('https://calendly.com/aditya-jha-coherentmarketinsights/30min') %}
+{% macro coherent_take(body_html) %}
+    <div class="take">
+      <div class="tag"><span class="dot"></span> The Coherent Take</div>
+      <p>{{ body_html | safe }}</p>
+    </div>
+{%- endmacro -%}
+{% macro section_cta(prompt, url) %}
+    <p class="seccta">{{ prompt }} <a href="{{ url }}" target="_blank" rel="noopener noreferrer">Get on a demo call →</a></p>
+{%- endmacro -%}
+{% macro outlook_card(c) %}
+    <div class="prospect">
+      <span class="flag">● {{ c.flag }}</span>
+      <h2>{{ c.company_name }}</h2>
+      <p>{{ c.narrative_html | safe }}</p>
+      {% if c.left or c.right %}
+      <div class="grid2">
+        {% if c.left %}<div class="cell"><div class="h">{{ c.left.h }}</div><div class="v">{{ c.left.v }}</div></div>{% endif %}
+        {% if c.right %}<div class="cell"><div class="h">{{ c.right.h }}</div><div class="v">{{ c.right.v }}</div></div>{% endif %}
+      </div>
+      {% endif %}
+      {% if c.action and c.action.v %}
+      <div class="action"><div class="h">{{ c.action.h }}</div><div class="v">{{ c.action.v }}</div></div>
+      {% endif %}
+      {% if c.plan and c.plan.steps %}
+      <ol class="plan">
+        <div class="planh">{{ c.plan.h }}</div>
+        {% for step in c.plan.steps %}<li><b>{{ step.title }}</b> {{ step.body_html | safe }}</li>{% endfor %}
+      </ol>
+      {% endif %}
+      <div class="prov">
+        <span class="src">CMI Intelligence</span>
+        <span class="dot"></span>
+        <span>360° methodology</span>
+        <span class="verified">✓ Analyst-reviewed</span>
+      </div>
+    </div>
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coherent Market Insights · {{ brand.issue_label }} — {{ recipient.first_name }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,300;0,400;0,500;0,700;0,900;1,400&family=Roboto+Slab:wght@400;500;700&display=swap" rel="stylesheet">
+{% raw %}<style>
+  :root{
+    --navy:#002060;--prussian:#112A54;--green:#70AD47;--magenta:#C0398B;
+    --ink:#212529;--paper:#FFFFFF;--bg:#EEF1F6;--muted:#5B6470;--faint:#8A93A3;
+    --hair:#E1E6EF;--hair-dk:#20365f;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--bg);color:var(--ink);font-family:"Roboto",system-ui,-apple-system,sans-serif;font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;padding:32px 16px 64px;}
+  .sheet{max-width:660px;margin:0 auto;background:var(--paper);border-top:4px solid var(--green);box-shadow:0 1px 0 rgba(0,32,96,.05),0 24px 60px -30px rgba(0,32,96,.35);}
+  @media (prefers-reduced-motion:no-preference){.sheet{animation:rise .6s cubic-bezier(.2,.7,.2,1) both;}@keyframes rise{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}}
+
+  .masthead{background:var(--paper);padding:26px 40px 20px;border-bottom:1px solid var(--hair);}
+  .brandrow{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .cmi-logo{display:block;width:200px;height:auto;max-width:100%;}
+  .kicker{text-align:right;line-height:1.6;}
+  .kicker .k1{font-size:10.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--green);}
+  .kicker .k2{display:block;font-size:10px;color:var(--faint);font-weight:500;letter-spacing:.14em;}
+  .tagstrip{margin-top:16px;padding-top:14px;border-top:1px solid var(--hair);font-size:12.5px;color:var(--muted);letter-spacing:.02em;font-weight:400;}
+  .tagstrip b{color:var(--navy);font-weight:600;}
+
+  .body{padding:32px 40px 8px;}
+  .datepill{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin:0 0 16px;}
+  h1.hello{font-family:"Roboto Slab",Georgia,serif;font-weight:700;font-size:28px;line-height:1.14;letter-spacing:-.01em;margin:0 0 12px;color:var(--navy);}
+  .lede{font-size:15px;color:#3a4048;margin:0 0 12px;max-width:56ch;}
+  .lede b{color:var(--navy);font-weight:600;}
+  .agentline{font-size:13px;color:var(--muted);margin:0 0 26px;padding-left:11px;border-left:3px solid var(--green);}
+  .agentline b{color:var(--navy);font-weight:600;}
+
+  .top3{border-top:2px solid var(--navy);margin:0 0 6px;}
+  .top3 .row{display:flex;gap:14px;padding:13px 2px;border-bottom:1px solid var(--hair);align-items:flex-start;}
+  .top3 .idx{flex:0 0 auto;width:22px;height:22px;border-radius:3px;background:var(--navy);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px;}
+  .top3 .txt{font-size:14px;color:#33383f;}
+  .top3 .txt b{color:var(--navy);font-weight:600;}
+  .top3 .cat{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#fff;background:var(--navy);border-radius:3px;padding:2px 7px;margin-right:9px;vertical-align:2px;white-space:nowrap;}
+
+  .eyebrow{display:flex;align-items:center;gap:12px;margin:42px 0 18px;}
+  .eyebrow .lbl{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--navy);white-space:nowrap;}
+  .eyebrow .rule{height:2px;background:linear-gradient(90deg,var(--green),var(--hair));flex:1;}
+
+  .prov{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:10.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin-top:10px;}
+  .prov .src{color:var(--navy);font-weight:600;}
+  .prov .verified{color:var(--green);display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border:1px solid rgba(112,173,71,.45);border-radius:3px;background:rgba(112,173,71,.09);letter-spacing:.08em;font-weight:600;}
+  .prov .dot{width:3px;height:3px;border-radius:50%;background:var(--faint);}
+
+  .prospect{background:var(--paper);border:1px solid var(--hair);border-left:4px solid var(--green);padding:22px 24px;}
+  .flag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#fff;background:var(--navy);padding:4px 10px;border-radius:3px;margin-bottom:13px;}
+  .prospect h2{font-family:"Roboto Slab",Georgia,serif;font-weight:700;font-size:25px;margin:0 0 10px;color:var(--navy);letter-spacing:-.01em;}
+  .prospect p{font-size:14px;color:#33383f;margin:0 0 16px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--hair);border:1px solid var(--hair);margin:16px 0;}
+  .grid2 .cell{background:var(--paper);padding:13px 15px;}
+  .grid2 .cell .h{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin-bottom:5px;}
+  .grid2 .cell .v{font-size:13px;color:var(--ink);line-height:1.45;}
+  .action{background:rgba(112,173,71,.08);border:1px solid rgba(112,173,71,.28);border-left:3px solid var(--green);padding:13px 16px;margin:4px 0 18px;}
+  .action .h{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#4d7a2f;margin-bottom:5px;}
+  .action .v{font-size:13px;color:#2b3520;}
+  .plan{margin:0;padding:0;list-style:none;counter-reset:step;}
+  .plan .planh{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);margin-bottom:12px;}
+  .plan li{counter-increment:step;position:relative;padding:0 0 13px 40px;font-size:13px;color:#33383f;}
+  .plan li::before{content:counter(step);position:absolute;left:0;top:-2px;width:26px;height:26px;border-radius:3px;background:var(--navy);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+  .plan li b{color:var(--navy);font-weight:600;}
+
+  .story{padding:6px 0 18px;border-bottom:1px solid var(--hair);margin-bottom:18px;}
+  .story:last-of-type{border-bottom:none;}
+  .story h3{font-family:"Roboto Slab",Georgia,serif;font-weight:500;font-size:19px;line-height:1.25;margin:0 0 9px;color:var(--navy);}
+  .story p{font-size:14px;color:#33383f;margin:0;}
+  .story p b{color:var(--navy);font-weight:600;}
+
+  .take{background:var(--navy);color:#DDE4F0;padding:22px 26px;margin:8px 0 6px;border-left:4px solid var(--green);}
+  .take .tag{font-size:10.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green);margin:0 0 12px;display:flex;align-items:center;gap:9px;}
+  .take .tag .dot{width:8px;height:8px;background:var(--green);border-radius:2px;transform:rotate(45deg);display:inline-block;}
+  .take p{font-size:14px;line-height:1.62;margin:0;color:#D5DDEC;}
+  .take p b{color:#fff;font-weight:600;}
+  .take .accent{color:var(--green);font-weight:600;}
+
+  .seccta{margin:16px 0 0;font-size:12.5px;color:var(--muted);text-align:center;}
+  .seccta a{color:var(--navy);text-decoration:none;font-weight:700;white-space:nowrap;border-bottom:2px solid var(--green);}
+
+  .caps{background:var(--navy);color:#DDE4F0;padding:32px 34px 28px;margin:8px 0 6px;border-radius:4px;border-top:4px solid var(--green);}
+  .caps h3{font-family:"Roboto Slab",Georgia,serif;font-weight:700;font-size:24px;line-height:1.25;margin:0 0 10px;color:#fff;letter-spacing:-.015em;}
+  .caps h3 em{color:var(--green);font-style:normal;}
+  .caps .capsub{font-size:13.5px;line-height:1.6;color:#9DACC8;margin:0;max-width:54ch;}
+  .capgrid{display:grid;grid-template-columns:1fr 1fr;gap:28px 24px;margin-top:26px;padding-top:26px;border-top:1px solid var(--hair-dk);}
+  .cap .n{font-family:"Roboto Slab",Georgia,serif;font-weight:700;font-size:34px;line-height:1;color:#fff;letter-spacing:-.015em;}
+  .cap .n .sfx{font-size:18px;letter-spacing:.01em;margin-left:1px;color:var(--green);}
+  .cap .l{font-size:12.5px;line-height:1.4;color:#8FA0C0;margin-top:9px;}
+  .capcards{display:grid;grid-template-columns:1fr 1fr;gap:24px 26px;margin-top:26px;padding-top:26px;border-top:1px solid var(--hair-dk);}
+  .capcard .cl{font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green);margin-bottom:9px;}
+  .capcard h4{font-weight:700;font-size:14px;line-height:1.35;margin:0 0 7px;color:#fff;letter-spacing:-.01em;}
+  .capcard p{font-size:12.5px;line-height:1.6;margin:0;color:#8FA0C0;}
+  .capcard p b{color:#C3CEE4;font-weight:600;}
+
+  .foot{background:var(--navy);color:#B9C4DA;padding:30px 40px 34px;margin-top:40px;text-align:center;}
+  .foot .fmark{margin-bottom:6px;display:flex;justify-content:center;}
+  .flogo-plate{display:inline-block;background:#fff;padding:12px 18px;border-radius:4px;line-height:0;}
+  .flogo-plate img{display:block;width:180px;height:auto;max-width:100%;}
+  .foot .assembled{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#8FA0C0;margin:16px 0 16px;}
+  .ctarow{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;}
+  .cta{display:inline-block;background:var(--green);color:#fff;text-decoration:none;font-weight:700;font-size:13.5px;letter-spacing:.02em;padding:12px 26px;border-radius:4px;}
+  .cta2{display:inline-block;background:transparent;color:#DDE4F0;text-decoration:none;font-weight:600;font-size:13.5px;letter-spacing:.02em;padding:11px 24px;border-radius:4px;border:1px solid rgba(221,228,240,.30);}
+  .foot .sign{margin:20px 0 0;font-size:13.5px;color:#DDE4F0;font-style:italic;}
+  .foot .meta{margin:6px 0 0;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:#7C8CAC;}
+  .foot a.unsub{color:#7C8CAC;text-decoration:underline;}
+
+  @media (max-width:560px){
+    body{padding:16px 8px 40px;}
+    .masthead,.body,.foot{padding-left:22px;padding-right:22px;}
+    h1.hello{font-size:24px;}
+    .grid2{grid-template-columns:1fr;}
+    .prospect{padding:18px 16px;}
+    .caps{padding:26px 20px 22px;}
+    .caps h3{font-size:20px;}
+    .capgrid{gap:22px 16px;}
+    .cap .n{font-size:29px;}
+    .cap .n .sfx{font-size:16px;}
+    .capcards{grid-template-columns:1fr;gap:22px;}
+  }
+</style>{% endraw %}
+</head>
+<body>
+<div class="sheet">
+
+  {# ================= MASTHEAD ================= #}
+  <header class="masthead">
+    <div class="brandrow">
+      <div class="brand">
+        <img class="cmi-logo" src="https://www.coherentmarketinsights.com/images/indexv2/CMI-logo.svg" alt="Coherent Market Insights" width="200" height="48">
+      </div>
+      <div class="kicker">
+        <span class="k1">{{ brand.issue_label }}</span>
+        <span class="k2">Issue · {{ brand.issue_date }}</span>
+      </div>
+    </div>
+    <div class="tagstrip"><b>360° market intelligence</b>{% if meta.seller %} — prepared for {{ meta.seller }},{% endif %} from CMI's market &amp; competitive-intelligence coverage.</div>
+  </header>
+
+  {# ================= INTRO ================= #}
+  <main class="body">
+    <p class="datepill">{{ meta.date_pill }}</p>
+    <h1 class="hello">Hello, {{ recipient.first_name }}.</h1>
+    <p class="lede">{{ intro.lede_html | safe }}</p>
+    <p class="agentline">Every read below is drawn from <b>CMI's analyst-verified research base</b> — 360° methodology, sourced and dated.</p>
+
+    {% if top3 %}
+    <div class="top3">
+      {% for item in top3 %}
+      <div class="row">
+        <div class="idx">{{ loop.index }}</div>
+        <div class="txt">{% if item.category %}<span class="cat">{{ item.category }}</span>{% endif %}{{ item.html | safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# ============ 1 · POTENTIAL CUSTOMER ============ #}
+    {% if potential_customer %}
+    <div class="eyebrow"><span class="lbl">Potential Customer</span><span class="rule"></span></div>
+    {{ outlook_card(potential_customer) }}
+    {% if take_customer %}{{ coherent_take(take_customer.body_html) }}{% endif %}
+    {{ section_cta("Want accounts like " ~ potential_customer.company_name ~ " mapped and sized across your target countries?", DEMO_URL) }}
+    {% endif %}
+
+    {# ============ 2 · INDUSTRY OUTLOOK ============ #}
+    {% if industry_outlook %}
+    <div class="eyebrow"><span class="lbl">Industry Outlook</span><span class="rule"></span></div>
+    {% for story in industry_outlook %}
+    <div class="story">
+      <h3>{{ story.headline }}</h3>
+      <p>{{ story.body_html | safe }}</p>
+      <div class="prov">
+        <span class="src">{{ story.source }}</span>
+        <span class="dot"></span>
+        <span>{{ story.date }}</span>
+        {% if story.verified %}<span class="verified">✓ Analyst-reviewed</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if take_industry %}{{ coherent_take(take_industry.body_html) }}{% endif %}
+    {{ section_cta("Want these shifts tracked continuously across your markets?", DEMO_URL) }}
+    {% endif %}
+
+    {# ============ 3 · COMPETITION OUTLOOK ============ #}
+    {% if competition_outlook %}
+    <div class="eyebrow"><span class="lbl">Competition Outlook</span><span class="rule"></span></div>
+    {{ outlook_card(competition_outlook) }}
+    {% if take_competition %}{{ coherent_take(take_competition.body_html) }}{% endif %}
+    {{ section_cta("Want competitor movement flagged as it happens in your categories?", DEMO_URL) }}
+    {% endif %}
+
+    {# ============ INSIDE COHERENT MARKET INSIGHTS (static) ============ #}
+    <div class="eyebrow"><span class="lbl">Inside Coherent Market Insights</span><span class="rule"></span></div>
+
+    <div class="caps">
+      <h3>Explore revenue-driven opportunities in <em>150+ countries</em> — with the actionable detail to realise them.</h3>
+      <p class="capsub">Your market, its adjacencies and your competitive set are a multi-market, multi-geography question. It is exactly what our proprietary <b>360-degree research methodology</b> is built to answer, rather than retrofit.</p>
+
+      <div class="capgrid">
+        <div class="cap"><div class="n">5,150<span class="sfx">+</span></div><div class="l">Clients worldwide</div></div>
+        <div class="cap"><div class="n">350<span class="sfx">+</span></div><div class="l">Analysts &amp; contract consultants</div></div>
+        <div class="cap"><div class="n">150<span class="sfx">+</span></div><div class="l">Countries covered</div></div>
+        <div class="cap"><div class="n">4,800<span class="sfx">+</span></div><div class="l">Consulting projects delivered</div></div>
+      </div>
+
+      <div class="capcards">
+        <div class="capcard">
+          <div class="cl">Industry Analysis</div>
+          <h4>Markets modelled in one comparable frame</h4>
+          <p>Your market and its adjacencies modelled against each other by segment and geography — so the <b>substitution economics</b> your commercial decisions turn on are explicit in the model. <b>1,200+ insights published per year</b> across 1,200+ niche segments.</p>
+        </div>
+        <div class="capcard">
+          <div class="cl">Competitive Intelligence</div>
+          <h4>Named competitors, tracked continuously</h4>
+          <p>Not a vendor table in an appendix. Ongoing monitoring of the players in your space — pipeline, deals, pricing moves and wins — so a competitor shift reaches you before it reaches your accounts.</p>
+        </div>
+        <div class="capcard">
+          <div class="cl">360° Methodology</div>
+          <h4>Primary interviews, not desk research alone</h4>
+          <p>Buyer, channel and expert interviews sit underneath the numbers, with assumptions documented and an <b>85–92% proof of authenticity</b> standard on the data. When someone internal asks where a figure came from, there is an answer.</p>
+        </div>
+        <div class="capcard">
+          <div class="cl">Cross-border Expansion</div>
+          <h4>Consulting where the standard cut doesn't reach</h4>
+          <p>If your country list or segment split runs past syndicated coverage, our advisory team scopes it as a project — the same practice behind <b>4,800+ consulting engagements</b> and a <b>73%+ client retention rate</b>.</p>
+        </div>
+      </div>
+
+      <p class="capsub" style="margin-top:24px;padding-top:20px;border-top:1px solid var(--hair-dk);">ISO 9001:2015 &amp; ISO 27001:2022 certified · ESOMAR member · trusted by teams at <b>Baxter</b> and <b>Deloitte Consulting LLP</b>.</p>
+    </div>
+
+  </main>
+
+  {# ================= FOOTER ================= #}
+  <footer class="foot">
+    <div class="fmark">
+      <span class="flogo-plate">
+        <img src="https://www.coherentmarketinsights.com/images/indexv2/CMI-logo.svg" alt="Coherent Market Insights" width="180" height="43">
+      </span>
+    </div>
+    <p class="assembled">{% if meta.seller %}Prepared for {{ recipient.first_name }} · {{ meta.seller }}{% else %}Prepared by Coherent Market Insights{% endif %}</p>
+    <div class="ctarow">
+      <a class="cta" href="{{ DEMO_URL }}" target="_blank" rel="noopener noreferrer">Get on a Demo Call →</a>
+      <a class="cta2" href="https://www.coherentmarketinsights.com/" target="_blank" rel="noopener noreferrer">Visit the Site →</a>
+    </div>
+    <p class="sign">360° market intelligence, made coherent.</p>
+    <p class="meta">Coherent Market Insights · <a class="unsub" href="{{ footer.unsubscribe_url | default('#') }}">Unsubscribe</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

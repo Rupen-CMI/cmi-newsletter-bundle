@@ -1,0 +1,163 @@
+{
+  "_comment": "Hand-curated profile facts, keyed by lowercased company name. These WIN over anything the model infers. Naming competitors is a factual-recall task, and a 7B answers it inconsistently -- the same prompt returned real CAR-T developers on one call and a list of CDMOs on the next, and its self-audit invented a company ('Cellgene Biotech') that does not exist. For accounts that matter, curate once here instead of re-rolling the dice each send. Any key may be omitted; omitted keys fall back to model inference.",
+  "immunoact": {
+    "value_prop": "ImmunoACT makes NexCAR19, India's first approved CD19-targeted CAR-T cell therapy, and supplies it to cancer hospitals treating relapsed or refractory B-cell leukaemia and lymphoma.",
+    "industries": [
+      "Cancer hospitals and oncology centres",
+      "Academic medical centres and research institutes",
+      "Bone marrow transplant and haematology units",
+      "Health insurers and reimbursement agencies",
+      "Government health schemes and public hospitals"
+    ],
+    "competitors": [
+      "Immuneel Therapeutics",
+      "Kite Pharma",
+      "Autolus Therapeutics",
+      "Legend Biotech",
+      "Novartis",
+      "Gilead Sciences",
+      "Bristol Myers Squibb",
+      "Johnson & Johnson"
+    ],
+    "caps_industry": "cell and gene therapy and oncology therapeutics",
+    "_competitor_note": "Ordered deliberately: the pure-play cell-therapy developers come first. The diversified majors (Novartis, Gilead, BMS, J&J) do sell approved CAR-Ts (Kymriah, Yescarta, Breyanzi, Carvykti) so they belong here, but they generate far more non-CAR-T news than the pure plays. Without the product_terms filter below, a Novartis generics story outranks a real cell-therapy move purely on news volume.",
+    "product_terms": [
+      "car-t",
+      "car t",
+      "cell therapy",
+      "cell-therapy",
+      "gene therapy",
+      "cd19",
+      "kymriah",
+      "yescarta",
+      "breyanzi",
+      "carvykti",
+      "tecartus",
+      "abecma",
+      "immunotherapy",
+      "autologous",
+      "apheresis",
+      "leukapheresis",
+      "lymphoma",
+      "leukaemia",
+      "leukemia",
+      "myeloma",
+      "b-cell"
+    ]
+  },
+  "vvf ltd": {
+    "_comment": "Hand-curated. VVF is a CONTRACT MANUFACTURER and oleochemicals producer: it makes bar soap and personal-care products FOR brands (J&J, Henkel, Reckitt, Unilever, P&G) and exports fatty alcohol/fatty acid/glycerine. Its rivals are therefore other contract manufacturers and oleochemical producers -- never the FMCG brands it manufactures for. The crawl put P&G and Reckitt in the competitor slot for exactly that reason.",
+    "value_prop": "VVF Limited is India's largest oleochemicals manufacturer and one of the world's largest contract manufacturers of bar soaps and personal care products, supplying global FMCG brands and exporting fatty alcohol, fatty acid and glycerine.",
+    "industries": [
+      "FMCG and personal care brands",
+      "Home care and detergent manufacturers",
+      "Cosmetics and toiletries companies",
+      "Pharmaceutical and healthcare manufacturers",
+      "Hospitality and institutional buyers",
+      "Industrial chemical buyers"
+    ],
+    "competitors": [
+      "Godrej Industries",
+      "KLK Oleo",
+      "Wilmar International",
+      "IOI Oleochemicals",
+      "Emery Oleochemicals",
+      "Galaxy Surfactants",
+      "Fine Organics",
+      "Nirma"
+    ],
+    "caps_industry": "oleochemicals and personal care contract manufacturing",
+    "product_terms": [
+      "oleochemical",
+      "oleochemicals",
+      "fatty alcohol",
+      "fatty acid",
+      "glycerine",
+      "glycerin",
+      "surfactant",
+      "bar soap",
+      "contract manufacturing",
+      "private label",
+      "personal care",
+      "toilet soap",
+      "detergent",
+      "specialty chemicals"
+    ],
+    "known_customers": [
+      "Unilever",
+      "Procter & Gamble",
+      "Johnson & Johnson",
+      "Henkel",
+      "Reckitt Benckiser",
+      "Colgate-Palmolive",
+      "L'Oreal"
+    ],
+    "trigger_queries": [
+      "FMCG company raises funding",
+      "personal care brand expansion new plant",
+      "soap brand launch",
+      "detergent company capacity expansion",
+      "cosmetics brand funding round",
+      "home care company new factory",
+      "beauty brand Series B",
+      "hair care brand launch",
+      "skincare brand raises funding",
+      "hotel chain expansion amenities",
+      "ayurvedic personal care brand funding",
+      "D2C beauty brand raises"
+    ],
+    "industry_queries": [
+      "oleochemicals demand outlook",
+      "palm oil prices fatty acid",
+      "contract manufacturing FMCG trends",
+      "surfactants market"
+    ],
+    "_queries_note": "Hand-written, and deliberately WITHOUT a country word: collect() appends the market name to every query, so 'FMCG company India raises funding' became '...funding India' and matched nothing. The generated fallback was worse -- it pasted the industry LABEL into a template ('Home care and detergent manufacturers company raises funding'), which no headline is worded like.",
+    "_lookback_note": "6 months, matching COMPETITOR_LOOKBACK_HOURS. Measured: VVF's buyer queries return 1 article within 96h and 18 within 30 days -- Indian FMCG buying-trigger news is not weekly, so the default window left the Potential Customer slot empty or stretched to an irrelevant big name (Titan, a watchmaker). Freshness still ranks recent signals first; the window only decides what is eligible at all.",
+    "trigger_lookback_hours": 4368
+  },
+  "fampay": {
+    "value_prop": "FamPay is an Indian neobank for teenagers, issuing FamCard prepaid cards and a UPI-enabled app that lets under-18 users pay independently under parental oversight and controls.",
+    "industries": [
+      "Parents and families of teenage users",
+      "Schools and student communities",
+      "Retail and e-commerce merchants accepting teen payments",
+      "Card networks and issuing banks",
+      "Gaming, streaming and subscription platforms"
+    ],
+    "competitors": [
+      "Jupiter",
+      "Slice",
+      "Fi Money",
+      "Junio",
+      "Akudo",
+      "Walrus",
+      "Paytm",
+      "PhonePe"
+    ],
+    "caps_industry": "teen-focused digital payments and neobanking",
+    "_competitor_note": "Junio, Akudo and Walrus are the direct teen-banking rivals; Jupiter, Slice and Fi are adult neobanks competing for the same graduating user. Paytm and PhonePe are the incumbent UPI wallets, included because they dominate the payment rails FamPay rides on -- not because they target teenagers."
+  },
+  "bharat forge": {
+    "value_prop": "Bharat Forge is an Indian metal forming company making forged and machined components for automotive, and increasingly for defence, aerospace, energy and industrial customers, including artillery systems and defence platforms.",
+    "industries": [
+      "Commercial vehicle and passenger car manufacturers",
+      "Defence ministries and armed forces procurement",
+      "Aerospace OEMs and tier-one suppliers",
+      "Oil and gas and power generation equipment makers",
+      "Railways and heavy industrial machinery"
+    ],
+    "competitors": [
+      "Ramkrishna Forgings",
+      "MM Forgings",
+      "Happy Forgings",
+      "Sundram Fasteners",
+      "Tata Advanced Systems",
+      "Larsen & Toubro",
+      "Thyssenkrupp",
+      "Sona BLW"
+    ],
+    "caps_industry": "forging, automotive components and defence manufacturing",
+    "_competitor_note": "Ramkrishna, MM and Happy Forgings are the direct Indian forging rivals. Tata Advanced Systems and L&T compete on the defence side specifically, which is where the drone and unmanned-systems overlap sits."
+  }
+}
