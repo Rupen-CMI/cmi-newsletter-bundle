@@ -19,7 +19,7 @@ else
   tmux new-session -d -s vllm \
     "cd /home && python -m vllm.entrypoints.openai.api_server \
       --model /home/merged --served-model-name cmi-7b \
-      --max-model-len 4096 --gpu-memory-utilization 0.94 --max-num-seqs 64 \
+      --max-model-len 10000 --gpu-memory-utilization 0.94 --max-num-seqs 32 \
       --enable-prefix-caching --enable-chunked-prefill --port 6006 \
       > /home/vllm.log 2>&1"
   echo "tmux session started"

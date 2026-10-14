@@ -135,17 +135,6 @@ class Profile:
 
     # ---- constructors -------------------------------------------------------
     @classmethod
-    def cmi_default(cls, market: str = "Global") -> "Profile":
-        t = config.TENANT
-        return cls(
-            company=t["company"], short=t["short"], recipient=t["recipient_first_name"],
-            tagline=t["tagline"], value_prop=t["value_prop"], industries=t["industries"],
-            competitors=t["competitors"], industry_keywords=config.INDUSTRY_KEYWORDS,
-            trigger_queries=config.TRIGGER_QUERIES, industry_queries=config.INDUSTRY_QUERIES,
-            market=market or "Global",
-        )
-
-    @classmethod
     def from_company(cls, company: str, website: str = "", recipient: str = "there",
                      country_name: str = "", conn=None) -> "Profile":
         """Infer a full tenant profile from just a company name (LLM), with safe fallbacks.
@@ -157,11 +146,26 @@ class Profile:
         DB connection open already (pipeline.py, send_one.py, run_all40.py,
         batch_generate.py) should pass it -- callers that don't (standalone scripts,
         the CLI validator) keep working exactly as before, just without the reuse.
+
+        Raises ValueError if `company` is blank -- there used to be a silent fallback
+        here (`cmi_default()`) that profiled the brief as CMI's OWN company instead of
+        the lead's. That meant a lead with a blank company field got sent a brief
+        written as if Coherent Market Insights were the client -- wrong industries,
+        wrong competitors, wrong everything, with no connection to the market/report
+        the lead actually asked about. Found 2026-10-07: 45 real sends had already gone
+        out this way. A missing company is a data problem to fix upstream (the lead
+        import step, not this function), not something to paper over with a fake
+        profile -- raising here is what makes that failure visible instead of silently
+        mailing the wrong content to a real person.
         """
         company = (company or "").strip()
         market = (country_name or "Global").strip() or "Global"
         if not company:
-            return cls.cmi_default(market)
+            raise ValueError(
+                "Profile.from_company: company is blank -- refusing to fall back to a "
+                "generic CMI-self profile (that fallback used to exist and caused 45 "
+                "real sends with wrong industries/competitors/content, 2026-10-07). "
+                "Fix the lead's company upstream, or exclude it from this run.")
 
         geo_line = (f" The target MARKET is {market}: prefer competitors, keywords and news queries "
                     f"relevant to {market}." if market != "Global" else "")
@@ -207,6 +211,13 @@ class Profile:
                 site_text = ""
         if not site_text and website:
             site_text = fetch_site_text(website)
+        # The model is served at --max-model-len 4096. 6000 chars of site_text (~1,700
+        # tokens) plus the system/instruction text (~850 tokens) left too little room
+        # for the 1500 output tokens requested below -- this 400-error'd on 118/1170
+        # briefs in the 2026-10-07 run and again on the first briefs of the 2026-10-08
+        # regen, verified against a long homepage scrape (2,597 input tokens on a
+        # 4,097-token request). Capped to what fits with real headroom to spare.
+        site_text = site_text[:2200]
 
         user = (
             f"SELLER: {company}\n" + (f"WEBSITE: {website}\n" if website else "") +
@@ -237,7 +248,7 @@ class Profile:
             "  industry_query_seeds — 5 to 7 Google-News queries for structural/industry-trend stories that "
             "change what the seller's buyers expect"
         )
-        data = llm.chat_json(system, user, max_tokens=1500, default={}) or {}
+        data = llm.chat_json(system, user, max_tokens=1100, default={}) or {}
 
         industries = _as_str_list(data.get("target_industries"))[:7]
         competitors = _as_str_list(data.get("competitors"))[:8]

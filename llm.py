@@ -204,11 +204,36 @@ def _log_training_pair(system: str, user: str, output: str, *, provider: str, js
         pass
 
 
+TOKEN_USAGE_LOG_PATH = os.path.join(HERE, "token_usage.jsonl")
+_token_usage_lock = threading.Lock()
+
+
+def _log_token_usage(usage) -> None:
+    """Append real prompt/completion token counts to token_usage.jsonl, one line per
+    call. Exists so a context-length ceiling can be picked from measured reality
+    instead of guessed and re-guessed after each hard rejection -- see the repeated
+    400 'maximum context length' errors this was added to stop happening blind."""
+    if usage is None:
+        return
+    try:
+        with _token_usage_lock:
+            with open(TOKEN_USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                }) + "\n")
+    except Exception:  # noqa: BLE001 -- logging must never break generation
+        pass
+
+
 def _call(client, model, messages, json_mode, temperature, max_tokens):
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     r = client.chat.completions.create(**kwargs)
+    _log_token_usage(getattr(r, "usage", None))
     return r.choices[0].message.content or ""
 
 
@@ -242,6 +267,10 @@ def chat(system: str, user: str, *, json_mode: bool = False,
     except Exception as e:  # noqa: BLE001 — re-raised below; a failed call must not be swallowed
         with _STATS_LOCK:
             STATS["failed"] += 1
+        if "maximum context length" in str(e):
+            import sys as _sys
+            print(f"  [llm DEBUG] max_tokens={max_tokens} system[:80]={system[:80]!r} "
+                  f"user[:120]={user[:120]!r}", file=_sys.stderr, flush=True)
         raise RuntimeError(f"LLM provider {name!r} failed: {type(e).__name__}: {e}") from e
 
 

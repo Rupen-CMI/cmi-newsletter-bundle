@@ -167,6 +167,45 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
     _migrate_leads_columns(conn)
+    _migrate_briefs_columns(conn)
+    _migrate_sends_columns(conn)
+
+
+def _migrate_sends_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the first release to any sends table created by
+    an older version of init_db, so upgrading never requires deleting the DB file."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(sends)")}
+    additions = {
+        # SendGrid's X-Message-Id, set only when status='sent'. Without this there is
+        # no way to later match a reply or a bounce/complaint webhook back to a
+        # specific send -- ported from the sibling newsletter-cc-cl project's
+        # campaign.py, which already tracks this for exactly that reason.
+        "message_id": "TEXT",
+    }
+    for col, decl in additions.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE sends ADD COLUMN {col} {decl}")
+    conn.commit()
+
+
+def _migrate_briefs_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the first release to any briefs table created by
+    an older version of init_db, so upgrading never requires deleting the DB file."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(briefs)")}
+    additions = {
+        # The tenant.Profile built at generation time (one LLM call to derive
+        # competitors/value_prop/etc) serialized as JSON. Without this, any later,
+        # separate-process validation pass has no way to re-check FIT-ERROR-style
+        # rules against the seller's profile except by calling the LLM again --
+        # duplicate spend for data that was already computed once. Saving it here
+        # lets validation reload the exact profile that produced this brief, at
+        # zero additional LLM cost, no matter how much later it runs.
+        "profile_json": "TEXT",
+    }
+    for col, decl in additions.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE briefs ADD COLUMN {col} {decl}")
+    conn.commit()
 
 
 def _migrate_leads_columns(conn: sqlite3.Connection) -> None:
@@ -178,6 +217,16 @@ def _migrate_leads_columns(conn: sqlite3.Connection) -> None:
         "campaign": "TEXT DEFAULT 'default'",
         "kind": "TEXT DEFAULT 'signal'",
         "last_attempt_at": "TEXT",
+        # Persisted ground truth for which company a lead's brief should be about --
+        # a signal brief's generation step reads THIS, not a value re-derived from the
+        # email inline at generation time (see tenant.Profile.from_company's
+        # 2026-10-07 incident docstring: a wrong/blank company silently produced a
+        # brief about CMI itself). No separate "real" website source exists in this
+        # schema yet, so this is populated from the email's own domain for now --
+        # still real value, because it gives validate_brief.py's DOMAIN check and
+        # generation itself ONE persisted value to agree on, instead of each
+        # recomputing it ad hoc and silently drifting apart.
+        "website": "TEXT DEFAULT ''",
     }
     for col, decl in additions.items():
         if col not in existing:
@@ -266,15 +315,15 @@ def mark_unsubscribed(conn: sqlite3.Connection, email: str, reason: str = "") ->
 
 
 def record_send(conn: sqlite3.Connection, *, email: str, status: str, subject: str = "",
-                 detail: str = "", campaign: str = "") -> None:
+                 detail: str = "", campaign: str = "", message_id: str = "") -> None:
     conn.execute(
-        """INSERT INTO sends(email, status, subject, detail, campaign, sent_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO sends(email, status, subject, detail, campaign, sent_at, message_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(email, campaign) DO UPDATE SET
              status=excluded.status, subject=excluded.subject, detail=excluded.detail,
-             sent_at=excluded.sent_at""",
+             sent_at=excluded.sent_at, message_id=excluded.message_id""",
         (email.strip().lower(), status, subject, detail, campaign,
-         datetime.now(timezone.utc).isoformat()),
+         datetime.now(timezone.utc).isoformat(), message_id or None),
     )
     conn.commit()
 
@@ -387,21 +436,27 @@ def save_brief(conn: sqlite3.Connection, *, email: str, company: str = "",
                kind: str = "signal", topic: str = "", html: str = "",
                status: str = "generated", validation: dict | None = None,
                llm_calls: int = 0, gen_seconds: float = 0.0,
-               run_id: int | None = None) -> int:
+               run_id: int | None = None, profile_json: str = "") -> int:
     """Store a generated brief and return its id.
 
     Briefs are append-only: a regenerate writes a new row rather than replacing the
     old one, so what was actually sent stays reconstructable even after the pipeline
     changes.
+
+    `profile_json` is the tenant.Profile that produced this brief (dataclasses.asdict,
+    then json.dumps) -- saving it here means any later validation pass, even in a
+    separate process/run, can reload the exact profile without a second LLM call to
+    re-derive it. Optional so existing callers (send_one.py, run_all40.py) keep
+    working unchanged.
     """
     cur = conn.execute(
         """INSERT INTO briefs
              (email, company, kind, topic, html, status, validation,
-              llm_calls, gen_seconds, run_id, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+              llm_calls, gen_seconds, run_id, created_at, profile_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (email, company, kind, topic, html, status,
          _validation_json(validation),
-         llm_calls, gen_seconds, run_id, _now()))
+         llm_calls, gen_seconds, run_id, _now(), profile_json))
     conn.commit()
     return int(cur.lastrowid)
 

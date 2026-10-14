@@ -64,6 +64,17 @@ def _agree_only() -> bool:
     return os.environ.get("CMI_LLM_AGREE", "").strip() == "1"
 
 
+class JudgeUnavailable(Exception):
+    """Raised by _ask_checked when the judge call itself errored (dead endpoint, bad
+    response, etc). Distinct from the model genuinely answering 'unknown' -- callers
+    that need to tell "the judge never ran" apart from "the judge ran and could not
+    tell" should use _ask_checked instead of _ask. Added 2026-10-08: a dead GPU
+    endpoint during the 2026-10-07 regen run made topic_alignment_verdict return
+    {"verdict": "unknown", "why": "no response"} on every one of 13+ Cloudflare
+    520/524 errors, indistinguishable in storage from a real 'aligned' pass -- so a
+    brief that was never actually checked looked identical to one that passed."""
+
+
 def _ask(system: str, user: str, default: dict) -> dict:
     try:
         import llm
@@ -71,6 +82,21 @@ def _ask(system: str, user: str, default: dict) -> dict:
         return llm.chat_json(system, user, max_tokens=300, default=default) or default
     except Exception:  # noqa: BLE001 -- a judge that breaks must not fail the brief
         return default
+
+
+def _ask_checked(system: str, user: str, default: dict) -> dict:
+    """Like _ask, but raises JudgeUnavailable instead of silently returning `default`
+    on a broken call, so the caller can report "judge did not run" distinctly from
+    a genuine low-confidence verdict."""
+    try:
+        import llm
+
+        out = llm.chat_json(system, user, max_tokens=300, default=None)
+    except Exception as e:  # noqa: BLE001
+        raise JudgeUnavailable(str(e)) from e
+    if not out:
+        raise JudgeUnavailable("empty/no response from judge")
+    return out
 
 
 def _passage(text: str, label: str, span: int = 900) -> str:
@@ -110,6 +136,57 @@ def competitor_verdict(seller: str, seller_sells: str, market: str,
     if v not in {"real", "customer", "adjacent", "unrelated", "unknown"}:
         v = "unknown"
     return {"verdict": v, "why": str(out.get("why", ""))[:160]}
+
+
+def competitor_signal_verdict(seller_sells: str, rival: str, passage: str) -> dict:
+    """Is the SIGNAL passage itself actually describing a real competitive move in the
+    seller's own category -- not just whether `rival` could ever be a competitor in the
+    abstract (that is competitor_verdict_binary's job, from general knowledge of the
+    company). This one reads the passage and decides if THIS claim is honest.
+
+    Forces a decisive yes/no, no 'unknown' escape -- confirmed 2026-10-14 that the
+    weaker 5-way check let real failures through by landing on 'adjacent' or 'unknown'
+    rather than committing to an answer (a real case: seller and rival were both real
+    companies in loosely related sectors, but the actual event reported -- a retail
+    store opening -- had nothing to do with the seller's specific product; the passage's
+    own hedged wording was enough for the weaker check to not commit). Describes the
+    distinguishing PRINCIPLE rather than naming the specific companies/products involved
+    in any one past case, deliberately -- a worked example risks the model pattern-
+    matching on those specific companies/wording rather than learning the general test,
+    and producing false negatives (or hallucinated similarity) on every other case that
+    doesn't look like the example.
+    """
+    if not _enabled() or not rival:
+        return {"verdict": "unknown", "why": "llm check disabled"}
+    system = (
+        "You judge whether a news passage actually describes a real competitive move "
+        "in the seller's own specific product category -- not just whether the two "
+        "companies are both real, or both named, or both operate somewhere in the "
+        "same broad economy. You must answer YES or NO. There is no 'unknown' or "
+        "'maybe' option: if the passage is ambiguous, weigh the test below and commit "
+        "to the closer answer.\n\n"
+        "The test: does the EVENT being reported -- the specific thing the rival did -- "
+        "involve the same product or service the seller sells, or something a buyer "
+        "would genuinely weigh as an alternative to it? Answer YES only if removing "
+        "every category label and buzzword from the passage still leaves a real move "
+        "in the seller's actual business. Answer NO if the event itself (a hire, an "
+        "expansion into an unrelated line of business, a store opening, a stock-price "
+        "move, a deal in a different market) has no bearing on the seller's specific "
+        "product, even when the passage dresses it up with the seller's own category "
+        "words ('manufacturing', 'AI', 'software', etc.) to make it sound connected -- "
+        "judge the actual event, not which words appear near it. Also answer NO when "
+        "the passage itself admits there is no real competitive news (hedging language "
+        "that concedes the signal is weak, unclear, or not really about a competitor), "
+        "even if the section is formatted as if it found something.\n"
+    )
+    user = (f"SELLER'S PRODUCT: {seller_sells}\n"
+            f"COMPANY NAMED AS COMPETITOR: {rival}\n\n"
+            f"SIGNAL PASSAGE:\n{passage[:900]}\n\n"
+            'Return JSON {"real_signal":"yes|no","why":"one short sentence"}')
+    out = _ask(system, user, {"real_signal": "", "why": "no response"})
+    ans = str(out.get("real_signal", "")).strip().lower()
+    verdict = {"yes": "real", "no": "unrelated"}.get(ans, "unknown")
+    return {"verdict": verdict, "why": str(out.get("why", ""))[:160]}
 
 
 def customer_verdict(seller: str, seller_sells: str, buyer: str, passage: str) -> dict:
@@ -234,16 +311,89 @@ def competitor_verdict_binary(seller_sells: str, rival: str, rival_business: str
             "their_business": biz}
 
 
-def judge_brief(text: str, profile, *, market: str = "") -> tuple[list[str], list[str]]:
-    """Run both checks over a brief's visible text. Returns (fails, warns).
+def topic_alignment_verdict(email: str, kind: str, expected: str, text: str) -> dict:
+    """Does this brief's ACTUAL content match what the recipient was promised?
+
+    Added 2026-10-07 after a real failure: a lead who asked about the "Ship Breaking
+    Market" (kind='report') was sent a brief entirely about hydraulic hammers,
+    Salesforce acquiring an AI startup, and GPU-as-a-Service -- none of it related to
+    ship breaking at all. Root cause was a separate bug (a blank-company lead silently
+    fell back to CMI's own demo profile instead of raising), but nothing would have
+    CAUGHT the resulting brief before it shipped -- every existing check validates the
+    brief against its own `profile` object, which was itself wrong. This check instead
+    validates against `expected`, which comes straight from the lead record in the DB
+    (`leads.company` for a signal brief, `leads.report_name` for a report brief) --
+    independent of whatever profile the generation step happened to build, so it is
+    blind to a bad profile. For a report brief specifically, `expected` is the exact
+    market/industry name the lead enquired about; it must be unambiguous in the
+    content, not just thematically adjacent.
+
+    Returns {"verdict": aligned|misaligned|unknown|judge_unavailable, "why": "..."}.
+    `judge_unavailable` means the call itself failed (dead endpoint, malformed
+    response) -- it is NOT the same as the model genuinely answering 'unknown', and
+    callers must not treat it as a pass. See JudgeUnavailable's docstring for why
+    this distinction exists.
+    """
+    if not _enabled() or not expected:
+        return {"verdict": "unknown", "why": "llm check disabled or no expected topic"}
+    kind_label = "an industry/market report the recipient specifically asked about" \
+        if kind == "report" else "a sales-intelligence brief about the recipient's own company"
+    system = (
+        "You judge whether a newsletter's actual content matches what the recipient was "
+        "promised. Read only the CONTENT given -- do not assume good faith; a brief that "
+        "drifts onto unrelated companies or markets is a real failure, not a stylistic "
+        "choice.\n"
+        "  aligned     = the content is clearly and substantially about EXPECTED\n"
+        "  misaligned  = the content is about something else, even if related/adjacent\n"
+        "  unknown     = you cannot tell from the content given"
+    )
+    user = (
+        f"This brief was sent to {email or 'a recipient'} as {kind_label}.\n"
+        f"EXPECTED SUBJECT: {expected}\n\n"
+        f"BRIEF CONTENT:\n{text[:2000]}\n\n"
+        'Return JSON {"verdict":"aligned|misaligned|unknown","why":"one short sentence '
+        'naming what the content was actually about if misaligned"}')
+    try:
+        out = _ask_checked(system, user, None)
+    except JudgeUnavailable as e:
+        return {"verdict": "judge_unavailable", "why": f"topic check did not run: {e}"[:200]}
+    v = str(out.get("verdict", "unknown")).strip().lower()
+    if v not in {"aligned", "misaligned", "unknown"}:
+        v = "unknown"
+    return {"verdict": v, "why": str(out.get("why", ""))[:200]}
+
+
+def judge_brief(text: str, profile, *, market: str = "", email: str = "",
+                kind: str = "", expected_subject: str = "") -> tuple[list[str], list[str]]:
+    """Run all checks over a brief's visible text. Returns (fails, warns).
 
     Only a confident wrong answer becomes a FAIL: 'unknown' is silent, and 'adjacent'
     is a warning because a near-neighbour is a judgement call a human should make.
+
+    `email`/`kind`/`expected_subject` enable the topic-alignment check (see
+    topic_alignment_verdict) -- all three are optional so existing callers that only
+    pass `text`/`profile`/`market` keep working exactly as before, just without it.
     """
     fails: list[str] = []
     warns: list[str] = []
     if not _enabled():
         return fails, warns
+
+    if expected_subject:
+        tv = topic_alignment_verdict(email, kind, expected_subject, text)
+        if tv["verdict"] == "misaligned":
+            fails.append(
+                f"LLM TOPIC ERROR: brief does not match the expected subject "
+                f"'{expected_subject}'. {tv['why']}")
+        elif tv["verdict"] == "judge_unavailable":
+            # Surfaced, never silent: a dead judge must not look like a pass. This is
+            # a warn rather than a fail because the deterministic checks are still the
+            # floor -- but it must show up somewhere so "never checked" is visible in
+            # the stored validation record, distinct from "checked and aligned".
+            warns.append(
+                f"LLM TOPIC CHECK SKIPPED: topic-alignment judge did not run against "
+                f"expected subject '{expected_subject}' ({tv['why']}). This brief's "
+                "topic alignment has NOT been verified.")
 
     # CMI_LLM_STRICT=0 routes every finding to warns instead: still reported, still
     # counted, but only a structural problem blocks the send.
@@ -265,26 +415,42 @@ def judge_brief(text: str, profile, *, market: str = "") -> tuple[list[str], lis
         if v["verdict"] == "customer":
             sink(f"LLM ROLE ERROR: Competition Outlook features '{comp}', which "
                  f"reads as a CUSTOMER of {seller}. {v['why']}")
-        elif v["verdict"] == "unrelated":
-            # In agree-only mode a single method is not enough to reject.
-            second = competitor_verdict_binary(sells, comp) if _agree_only() else None
-            if second is None or second["verdict"] == "unrelated":
-                sink(f"LLM ROLE ERROR: '{comp}' is not in {seller}'s business at all. "
-                     f"{v['why']}")
-            else:
-                warns.append(f"LLM: methods disagree on '{comp}' -- passage says "
-                             f"unrelated, business check says {second['verdict']}.")
-        elif v["verdict"] == "adjacent":
-            warns.append(f"LLM: '{comp}' is adjacent, not a direct substitute. {v['why']}")
-        elif v["verdict"] == "unknown" and sells:
-            # The passage did not settle it -- which is the common case, and how TSMC
-            # shipped as a wood-veneer rival. Fall back to the binary check, which is
-            # reliable at rejecting an out-of-industry name (4/5 against method 1's 1/5).
+        else:
+            # The passage-based verdict ("real"/"adjacent"/"unrelated"/"unknown") was
+            # measured at only 1/5 correct on real failures -- it is too easy for a
+            # brief to talk its way to "adjacent" or "unknown" by mentioning the
+            # seller's own category words in a sentence about an unrelated company
+            # (confirmed 2026-10-14: Offeri/PriceSmart, a metal-fabrication software
+            # seller paired with a Caribbean retail chain, passed clean because the
+            # passage said "points to more competition... in the broader manufacturing
+            # ecosystem" -- true-sounding but not actually about a competing product).
+            # The binary method (competitor_verdict_binary) was measured at 4/5 by
+            # asking one decisive yes/no question instead of a 5-way label, so it now
+            # runs on every verdict except "customer", not only as a fallback for
+            # "unknown" -- there is no verdict from the weaker method that should be
+            # allowed to end the check without the stronger one's confirmation.
             b = competitor_verdict_binary(sells, comp)
             if b["verdict"] == "unrelated":
                 sink("LLM ROLE ERROR: '" + comp + "' (" + b.get("their_business", "") +
                      ") sells nothing a buyer of " + seller + "'s product would "
                      "substitute. " + b["why"])
+            else:
+                # competitor_verdict_binary judges the COMPANY in the abstract (could a
+                # buyer get the same thing from them, from general knowledge of their
+                # business) -- it cannot catch a real competitor being cited for an
+                # event that has nothing to do with the shared category (Offeri's rival
+                # could genuinely compete with Offeri on quotation software and still be
+                # cited here for an unrelated retail-store story). Read the actual
+                # passage and demand a decisive yes/no on whether THIS claim is honest.
+                s = competitor_signal_verdict(sells, comp, _passage(text, "Competition Outlook"))
+                if s["verdict"] == "unrelated":
+                    sink(f"LLM ROLE ERROR: the Competition Outlook signal about '{comp}' "
+                         f"is not actually a competitive move in {seller}'s category. "
+                         f"{s['why']}")
+                elif v["verdict"] == "adjacent" and b["verdict"] != "real":
+                    # Neither the binary company check nor the passage check confirmed
+                    # a genuine rival -- still worth a warn.
+                    warns.append(f"LLM: '{comp}' is adjacent, not a direct substitute. {v['why']}")
 
     cust = vb.section_company(text, "Potential Customer")
     if cust:

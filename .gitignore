@@ -4,11 +4,29 @@
 __pycache__/
 *.pyc
 *.log
+logs/
+
+# Virtualenvs / local tool caches
+venv/
+.venv/
+.pytest_cache/
 
 # Generated briefs -- reproducible, and they contain recipient names.
 output*/
 !sample_output/
+validate_tmp_report/
 
 # Local database. Ships once with the bundle; do not track further changes.
 *.db-journal
 *.db-wal
+*.db-shm
+*.db
+
+# Per-run send/validate artifacts -- reproducible, recipient-identifying, or scratch scripts.
+send_ids_*.json
+send_ids_run*.json
+validate_ids_*.json
+brief_check_*.txt
+token_usage.jsonl
+validate_tmp_report/*
+session_scratch/*

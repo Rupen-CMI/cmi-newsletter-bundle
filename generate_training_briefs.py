@@ -59,10 +59,9 @@ def generate_one(lead, kind: str) -> tuple[str, bool]:
     country = config.get_country(market)
     market_name = country["name"]
 
-    if lead["company"]:
-        profile = Profile.from_company(lead["company"], "", lead["name"] or "there", market_name)
-    else:
-        profile = Profile.cmi_default(market_name)
+    # Raises ValueError if lead["company"] is blank -- see Profile.from_company's
+    # docstring for why there is no CMI-self fallback here.
+    profile = Profile.from_company(lead["company"], "", lead["name"] or "there", market_name)
     profile.recipient = lead["name"] or "there"
 
     articles = collect(profile, country)

@@ -43,11 +43,17 @@ def _safe_log(msg: str = "") -> None:
         print(str(msg).encode(enc, errors="replace").decode(enc, errors="replace"))
 
 
-def _validate_or_raise(html: str, profile) -> None:
+def _validate_or_raise(html: str, profile, *, email: str = "", kind: str = "",
+                       topic: str = "") -> None:
     """Gate a send on validate_brief.py's structure/roles/fit checks -- a brief with
     a missing section or a rival in the customer slot must never reach an inbox
-    silently. Warnings are logged but don't block; only FAILs stop the send."""
-    fails, warns = check_html(html, profile)
+    silently. Warnings are logged but don't block; only FAILs stop the send.
+
+    `email`/`kind`/`topic` enable the DOMAIN and TOPIC checks (independent of
+    `profile`, which can itself be wrong -- see tenant.Profile.from_company's
+    docstring). Omitting them, as every call site here used to, silently skipped
+    both checks for every brief sent through this path."""
+    fails, warns = check_html(html, profile, email=email, kind=kind, topic=topic)
     for w in warns:
         _safe_log(f"  [validate] WARN: {w}")
     if fails:
@@ -68,13 +74,12 @@ def send_one(*, email: str, company: str = "", recipient: str = "there", market:
     conn = dbmod.get_conn()
     dbmod.init_db(conn)
 
-    if company:
-        # Pass the website through: Profile.from_company fetches it and profiles from the
-        # real homepage copy instead of guessing from the company name.
-        profile = Profile.from_company(company, website, recipient or "there", market_name,
-                                       conn=conn)
-    else:
-        profile = Profile.cmi_default(market_name)
+    # Pass the website through: Profile.from_company fetches it and profiles from the
+    # real homepage copy instead of guessing from the company name. Raises ValueError
+    # if company is blank -- see that function's docstring for why there is no
+    # fallback here.
+    profile = Profile.from_company(company, website, recipient or "there", market_name,
+                                   conn=conn)
     profile.recipient = recipient or "there"
 
     _safe_log(f"generating brief for {email} ({profile.company}) [{market_name}]")
@@ -92,16 +97,21 @@ def send_one(*, email: str, company: str = "", recipient: str = "there", market:
     ctx = compose.build_context(profile, brief, kind, market_topic=report_name, log=_safe_log)
     html = render.render(ctx, TEMPLATE)
 
-    if kind == "signal":
-        _validate_or_raise(html, profile)
+    # Was `if kind == "signal"` -- report-kind briefs sent through this path got
+    # ZERO validation (not even STRUCTURE/ROLES/FIT), silently, since the day this
+    # function grew a `kind` parameter. Every brief this function sends must be
+    # checked regardless of kind.
+    expected_subject = report_name if kind == "report" else company
+    _validate_or_raise(html, profile, email=email, kind=kind, topic=expected_subject)
 
     dbmod.upsert_lead(conn, email=email, name=recipient, company=company,
                        market=market_name, report_name=report_name, source="manual")
 
     subject = subject or f"Coherent Market Insights · {profile.company}'s Brief"
     try:
-        mailer.send_html(html, email, subject, filename_hint=email, conn=conn)
-        dbmod.record_send(conn, email=email, status="sent", subject=subject, campaign=campaign_label)
+        msg_id = mailer.send_html(html, email, subject, filename_hint=email, conn=conn)
+        dbmod.record_send(conn, email=email, status="sent", subject=subject, campaign=campaign_label,
+                          message_id=msg_id)
         _safe_log(f"sent -> {email}")
     except Exception as e:  # noqa: BLE001
         dbmod.record_send(conn, email=email, status="failed", detail=f"{type(e).__name__}: {e}",

@@ -249,10 +249,9 @@ def _generate_brief_html(contact: Contact, kind: str, log) -> tuple[str, object]
     country = config.get_country(contact.market or "Global")
     market_name = country["name"]
 
-    if contact.company:
-        profile = Profile.from_company(contact.company, "", contact.name, market_name)
-    else:
-        profile = Profile.cmi_default(market_name)
+    # Raises ValueError if contact.company is blank -- see Profile.from_company's
+    # docstring for why there is no CMI-self fallback here.
+    profile = Profile.from_company(contact.company, "", contact.name, market_name)
     profile.recipient = contact.name
 
     articles = collect(profile, country)
@@ -319,10 +318,16 @@ def run_campaign(
 
         try:
             html, profile = _generate_brief_html(c, kind, log=lambda m: None)
-            if kind == "signal":
-                fails, _warns = check_html(html, profile)
-                if fails:
-                    raise RuntimeError(f"brief failed validation: {'; '.join(fails)}")
+            # Was `if kind == "signal"` -- report-kind briefs sent through this path
+            # got ZERO validation, silently. Every brief sent here must be checked
+            # regardless of kind. email/topic also now passed through so the
+            # DOMAIN/TOPIC checks (independent of `profile`, which can itself be
+            # wrong) actually run here instead of silently no-op'ing on blank args.
+            expected_subject = c.report_name if kind == "report" else c.company
+            fails, _warns = check_html(html, profile, email=c.email, kind=kind,
+                                       topic=expected_subject or "")
+            if fails:
+                raise RuntimeError(f"brief failed validation: {'; '.join(fails)}")
             mailer.send_html(html, c.email, subject, filename_hint=f"row{c.row_num}", conn=conn)
             dbmod.record_send(conn, email=email_l, status="sent", subject=subject,
                                campaign=campaign_label)

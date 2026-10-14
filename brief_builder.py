@@ -33,10 +33,22 @@ DEMO_URL = "https://calendly.com/aditya-jha-coherentmarketinsights/30min"
 SITE_URL = "https://coherentconnect.ai/"
 
 
+# The model sometimes answers a "name the company" prompt with the literal word
+# "None" (or a close variant) instead of leaving the field empty, when the signal
+# genuinely names no company. A bare truthiness check treats that string as a real
+# answer -- `data.get("company_name") or fallback` never falls back, because "None"
+# is non-empty -- so it rendered verbatim as a section headline ("None in the
+# signal", 2026-10-08). Anything matching this is treated as no answer at all.
+_NON_ANSWERS = {"none", "n/a", "na", "unknown", "unnamed", "not specified",
+                "not applicable", "no company", "null", "nil", "-", "—"}
+
+
 def _clean_frag(s: str) -> str:
     if not isinstance(s, str):
         return ""
     s = s.strip()
+    if s.strip(".").strip().lower() in _NON_ANSWERS:
+        return ""
     # Block tags the template supplies itself. The model sometimes wraps its answer in
     # <p>...</p>; stripping only the leading '<' left a literal "p>" rendering as text
     # at the top of the card, so drop the whole tag.
@@ -128,6 +140,8 @@ def triage_triggers(triggers: list[Article], profile):
     data = llm.chat_json(system, user, max_tokens=600, default={})
     rel: dict[int, tuple[str, str]] = {}
     for it in (data.get("items") or []):
+        if not isinstance(it, dict):
+            continue  # model occasionally returns a bare string instead of {"index":...}
         i = it.get("index")
         if isinstance(i, int) and 0 <= i < len(cands):
             r = (it.get("relationship") or "other").strip().lower()
@@ -161,6 +175,11 @@ def build_market_moves(pool: list[Article], profile, topic: str, log=print):
         "Report what a named company did in this market -- an acquisition, investment, "
         "expansion, new plant, or partnership -- and what it signals about where the "
         "market is heading. Ground every claim in the SIGNAL; invent no figures.\n\n"
+        "The SIGNAL's source may itself be a rival market-research firm's own report or "
+        "PR-wire release (e.g. MarketsandMarkets, Grand View Research, Mordor "
+        "Intelligence, Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire). If so, "
+        "report only the named company's move as news -- never present the rival "
+        "firm's market-size figures, forecasts or findings as CMI's own research.\n\n"
         + voice.active_style()
     )
     user = (
@@ -169,7 +188,8 @@ def build_market_moves(pool: list[Article], profile, topic: str, log=print):
         " SOURCE: " + art.source + " | DATE: " + _date_label(art.published) + "\n"
         " SUMMARY: " + art.summary[:400] + "\n\n"
         "Return a JSON object with keys:\n"
-        "  company_name — the company making the move\n"
+        "  company_name — the company making the move. Leave this EMPTY if the SIGNAL "
+        "does not actually name one; never write \"None\" or similar as a placeholder.\n"
         "  narrative_html — 3 to 5 SHORT sentences (max 24 words each) on what they did "
         "and what it signals for the market. Inline <b> allowed.\n"
         "  why_it_matters — one sentence on why this move matters now\n"
@@ -315,6 +335,8 @@ def triage_industry_fit(cands: list[Article], profile) -> list[Article]:
     data = llm.chat_json(system, user, max_tokens=400, default={})
     fit: dict[int, str] = {}
     for it in (data.get("items") or []):
+        if not isinstance(it, dict):
+            continue  # model occasionally returns a bare string instead of {"index":...}
         i = it.get("index")
         if isinstance(i, int) and 0 <= i < len(top):
             f = (it.get("fit") or "medium").strip().lower()
@@ -407,13 +429,24 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
         log("    · no competitor signal mentions the seller's product category; "
             "using the most newsworthy rival move instead")
     pool.sort(key=lambda x: x[0].composite, reverse=True)
-    art, comp = pool[0]
-
-    log(f"    · free-research: {comp}")
-    enr = free_research.enrich_company(comp, config.get_country(getattr(profile, "market", "Global")))
-    card = _write_card(art, comp, "competitor", enr, profile)
-    card["_sources"] = enr.get("sources_used", [])
-    return card, art
+    # The top-ranked candidate is sometimes attributed to a named rival by title/
+    # summary match (_is_named_rival) while the SIGNAL itself turns out to not be a
+    # real competitive move at all (a regulator's internal review mistaken for a
+    # company, an unrelated business line) -- _write_card's own writer now refuses
+    # to fabricate a card for that case (returns None) rather than writing an
+    # honest "nothing happened" card that would still get rendered and sent. Try
+    # the next-best candidate instead of dropping the section outright when that
+    # happens; only give up once the whole pool is exhausted.
+    for art, comp in pool:
+        log(f"    · free-research: {comp}")
+        enr = free_research.enrich_company(comp, config.get_country(getattr(profile, "market", "Global")))
+        card = _write_card(art, comp, "competitor", enr, profile)
+        if card is None:
+            log(f"    · {comp}'s signal is not a real competitive move -- trying next candidate")
+            continue
+        card["_sources"] = enr.get("sources_used", [])
+        return card, art
+    return None, None
 
 
 # ── Shared card writer (customer or competitor) ──────────────────────────────
@@ -429,10 +462,19 @@ def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> d
         system = (
             f"You are a competitive-intelligence analyst for {profile.company} ({profile.short}), which sells "
             f"{profile.value_prop} Write a competitor brief on {name}. Ground every claim in the SIGNAL and FREE "
-            "RESEARCH; do NOT invent numbers. No angle-bracket placeholders.\n\n" + voice.active_style()
+            "RESEARCH; do NOT invent numbers. No angle-bracket placeholders.\n\n"
+            "The SIGNAL is sometimes about something that is not actually a competitive move at all -- a "
+            "regulator's internal review mistaken for a named company, an unrelated business line, a stock-"
+            "valuation note with no product news in it. If the SIGNAL does not describe a real move by "
+            f"{name} that is relevant to {profile.short}'s own market, set \"no_real_signal\": true and leave "
+            "the other fields empty, instead of writing a card that says there is no real competitive "
+            "news -- that card would still be sent to the reader as if it were a genuine finding.\n\n"
+            + voice.active_style()
         )
         user = (
             f"{src}{fr}\nReturn a JSON object with keys:\n"
+            "  no_real_signal — true only if the SIGNAL above is not actually a competitive move (see system "
+            "prompt); omit or false otherwise\n"
             f"  narrative_html — 3 to 5 SHORT sentences (max 24 words each): what {name} did, the figures if stated, and what it means "
             f"competitively for {profile.short}. Inline <b> allowed.\n"
             "  why_it_matters — one sentence on why this competitor move matters now\n"
@@ -441,6 +483,8 @@ def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> d
             "  counter_play — array of exactly 3 objects with 'title' (imperative) and 'body_html' (one sentence)"
         )
         data = llm.chat_json(system, user, max_tokens=1000, default={})
+        if data.get("no_real_signal"):
+            return None
         steps = _steps(data.get("counter_play"), profile, "competitor")
         return {
             "flag": f"Competition Outlook · {ind}",
@@ -493,13 +537,28 @@ def _steps(raw, profile, kind: str) -> list[dict]:
 
 
 # ── 3. INDUSTRY OUTLOOK — synthesize the industry news we track ───────────────
-def synthesize_news(arts: list[Article], profile) -> list[dict]:
+def synthesize_news(arts: list[Article], profile, market_topic: str = "") -> list[dict]:
+    """`market_topic`, when given, is the EXACT subject the recipient was promised (a
+    report brief's section 1, "Your Market", hard-codes its title to this string in
+    compose.py regardless of what this function writes) -- so on a report brief this is
+    the only writer step that can keep the body content honest about what the headline
+    claims. Added 2026-10-08 after a report brief headlined "Metal Roofings Market" over
+    a body about UAE renewable energy: the selected signal was off-topic and nothing in
+    this prompt ever told the model what topic it was supposed to be on."""
     if not arts:
         return []
+    topic_line = (
+        f"\nThe recipient asked specifically about the {market_topic} market. Every "
+        f"sentence must be clearly and substantially about {market_topic} -- not just "
+        "an adjacent or loosely related industry. If a SIGNAL does not genuinely "
+        f"support {market_topic}, write a shorter, more general paragraph rather than "
+        "drifting onto the SIGNAL's own unrelated subject.\n"
+        if market_topic else "")
     system = (
         f"You are a sales-intelligence editor for {profile.company} ({profile.short}). For each signal, write "
         "3 to 5 SHORT sentences (max 24 words each) about the industry shift and what it means for the "
         f"seller. End each with the 'so what' for {profile.short}. Ground in the signal; no invented figures. "
+        f"{topic_line}"
         "\n\n" + voice.active_style()
     )
     user = (
@@ -513,6 +572,8 @@ def synthesize_news(arts: list[Article], profile) -> list[dict]:
     out: list[dict] = []
     if items:
         for it in items:
+            if not isinstance(it, dict):
+                continue  # model occasionally returns a bare string instead of {"index":...}
             i = it.get("index")
             if not isinstance(i, int) or i < 0 or i >= len(arts):
                 continue
@@ -527,6 +588,62 @@ def synthesize_news(arts: list[Article], profile) -> list[dict]:
                         "source": a.source, "source_url": a.url, "source_name": a.source,
                         "date": _date_label(a.published), "verified": True})
     return out[:1]   # Industry Outlook carries a single signal
+
+
+def triage_and_synthesize_industry(cands: list[Article], profile,
+                                   market_topic: str = "") -> list[dict]:
+    """Merges triage_industry_fit + synthesize_news into one call: build_brief only
+    ever uses the #1-ranked candidate out of triage_industry_fit's output (fit_pool[:1]
+    right before calling synthesize_news on it), so ranking 8 candidates and writing
+    prose for exactly one of them were two separate LLM round-trips for what is really
+    one decision -- "which of these is the best fit, and what does it say". Combined
+    2026-10-14 to cut one call per brief; same fallback behavior as each original
+    function (degraded ranking falls back to composite order, no candidates returns [],
+    a parse failure still falls back to the raw top candidate's own title/summary
+    rather than producing nothing)."""
+    if not cands:
+        return []
+    top = cands[:8]
+    if len(top) == 1:
+        return synthesize_news(top, profile, market_topic=market_topic)
+    topic_line = (
+        f"\nThe recipient asked specifically about the {market_topic} market. Every "
+        f"sentence must be clearly and substantially about {market_topic} -- not just "
+        "an adjacent or loosely related industry. If a SIGNAL does not genuinely "
+        f"support {market_topic}, write a shorter, more general paragraph rather than "
+        "drifting onto the SIGNAL's own unrelated subject.\n"
+        if market_topic else "")
+    system = (
+        f"You are a sales-intelligence editor for {profile.company} ({profile.short}), which sells "
+        f"{profile.value_prop} First judge how well each news signal connects to what the seller "
+        "specifically sells -- not just its broad industry. A story about the seller's exact niche is a "
+        "better fit than one that only shares a broad vertical label (e.g. any hospital news for a "
+        "therapy-specific seller) with no real connection to the specific product/segment, even if it "
+        "looks on-topic. Then, for the single BEST-fitting signal only, write 3 to 5 SHORT sentences "
+        f"(max 24 words each) about the industry shift and what it means for the seller. End with the "
+        f"'so what' for {profile.short}. Ground in the signal; no invented figures. {topic_line}"
+        "\n\n" + voice.active_style()
+    )
+    user = (
+        f"SIGNALS:\n{_cands_block(top)}\n\n"
+        'Return JSON {"best_index":<int>,"headline":"...","body_html":"..."} -- "best_index" is the '
+        "index of the single best-fitting signal above, \"headline\" is punchy and faithful (plain text, "
+        "no angle brackets), and \"body_html\" is the paragraph for that one signal (inline <b>/<i> "
+        "allowed). Finished prose, never placeholders."
+    )
+    data = llm.chat_json(system, user, max_tokens=900, default={})
+    i = data.get("best_index") if isinstance(data, dict) else None
+    if not isinstance(i, int) or i < 0 or i >= len(top):
+        # Triage/write failed or degraded -- fall back to composite order and let
+        # synthesize_news make its own independent attempt at the top candidate,
+        # same as the pre-merge code path did on a failed triage.
+        return synthesize_news(cands, profile, market_topic=market_topic)
+    a = top[i]
+    headline = _clean_frag(data.get("headline") or "") or a.title
+    body_html = _clean_frag(data.get("body_html") or "") or a.summary or a.title
+    return [{"headline": headline, "body_html": body_html,
+             "source": a.source, "source_url": a.url, "source_name": a.source,
+             "date": _date_label(a.published), "verified": True}]
 
 
 # ── Assemble ─────────────────────────────────────────────────────────────────
@@ -570,14 +687,15 @@ def build_brief(scored: list[Article], profile, log=print, *,
     used = {a.title for a in (cust_art, comp_art, moves_art) if a}
     industry_pool = [a for a in industry if a.title not in used]
     theme, themed = cluster.dominant_theme(industry_pool)
-    # One industry signal only: the strongest of the dominant theme. More than one
-    # dilutes the section and repeats the same analyst read.
-    fit_pool = triage_industry_fit(themed or industry_pool, profile)
-    industry_sel = fit_pool[:1]
     if theme:
         log(f"  → [3] Industry Outlook: TF-IDF theme = '{theme}' ({len(themed)} signals)")
-    log("  → [3] Industry Outlook: synthesize news")
-    industry_news = synthesize_news(industry_sel, profile)
+    # One industry signal only: the strongest of the dominant theme. More than one
+    # dilutes the section and repeats the same analyst read. triage (rank by fit) and
+    # synthesize (write prose for the #1 pick) are one combined call -- see
+    # triage_and_synthesize_industry's docstring for why.
+    log("  → [3] Industry Outlook: triage + synthesize news")
+    industry_news = triage_and_synthesize_industry(themed or industry_pool, profile,
+                                                    market_topic=market_topic)
 
     # NOTE: this used to also call build_editorial() here to produce a lede, three
     # top3 headline lines, and three analyst "takes" -- a full extra LLM call

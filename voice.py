@@ -50,6 +50,24 @@ Consistency -- this matters as much as any single rule.
 
 Never invent a number, date, company name or quote. Use only what the SIGNAL gives you.
 Only <b> and <i> inline HTML. No em dashes, no angle-bracket placeholders.
+
+FACTUAL GUARDRAILS -- these have each caused a real brief to go out broken; treat them
+as hard rules, not style preferences:
+- If the SIGNAL does not name a company, leave the company field EMPTY. Never write
+  "None", "N/A", "Unknown", "not specified" or any other placeholder word into a field
+  that is meant to hold a name -- an empty string is correct, a placeholder string is not.
+- Never attribute a claim, figure or finding to Coherent Market Insights / CMI if the
+  SIGNAL's actual source is a different market-research firm, syndicated research
+  report, or PR-wire research release (e.g. MarketsandMarkets, Grand View Research,
+  Mordor Intelligence, Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire). Attribute
+  it to the real source by name instead. CMI must never present a rival firm's own
+  research as if it were CMI's.
+- Stay strictly on the stated MARKET/TOPIC given to you. Do not substitute a different
+  market, product category or industry just because the SIGNAL mentions it in passing
+  or because it is easier to write about. If the SIGNAL does not actually support the
+  stated topic, say less rather than drifting onto an unrelated subject.
+- Never invent a greeting, salutation or recipient name. Name fields come from the
+  caller, not from you.
 """.strip()
 
 
@@ -84,6 +102,13 @@ clauses per sentence, one idea each. Active voice, no fragments, no em dashes, a
 most one hedge. No jargon, no metaphor standing in for analysis, no padding.
 Precise domain terms are wanted. Never invent a number, date, name or quote.
 Only <b> and <i> inline HTML.
+
+GUARDRAILS: if no company is named in the SIGNAL, leave the field EMPTY -- never
+write "None"/"N/A"/"Unknown" as a placeholder. Never credit a rival research firm
+or PR-wire release (MarketsandMarkets, Grand View Research, Mordor Intelligence,
+Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire, etc.) to CMI -- name the real
+source. Stay on the stated MARKET/TOPIC; do not drift onto an unrelated subject
+even if the SIGNAL mentions it in passing.
 """.strip()
 
 

@@ -45,18 +45,17 @@ for a bulk send:
 TUNING (env vars, all optional -- same names/shape as campaign.py's CLI flags so the
 reasoning transfers directly):
     CMI_SEND_BATCH_SIZE        sends per batch                    (default 10)
-    CMI_SEND_SHORT_DELAY_MIN   min seconds between sends IN a batch (default 5)
-    CMI_SEND_SHORT_DELAY_MAX   max seconds between sends IN a batch (default 9)
-    CMI_SEND_LONG_PAUSE_MIN    min seconds BETWEEN batches          (default 60)
-    CMI_SEND_LONG_PAUSE_MAX    max seconds BETWEEN batches          (default 70)
+    CMI_SEND_SHORT_DELAY_MIN   min seconds between sends IN a batch (default 6)
+    CMI_SEND_SHORT_DELAY_MAX   max seconds between sends IN a batch (default 8)
+    CMI_SEND_LONG_PAUSE_MIN    min seconds BETWEEN batches          (default 25)
+    CMI_SEND_LONG_PAUSE_MAX    max seconds BETWEEN batches          (default 40)
     CMI_SEND_MAX_CONSEC_FAIL   abort after this many failures in a row (default 3)
     CMI_SEND_PACING_DISABLE=1  turn all delays off (tests only)
 
-Intra/inter-batch figures match this project's newsletter-cc-cl sibling as run in
-production, not campaign.py's own file defaults (which are lower and were tuned for
-a different, already-warm sending domain -- see that file's "NOTE ON SEND PACING
-HISTORY"). Matching the numbers actually in use elsewhere rather than that file's
-committed defaults.
+2026-10-07: tuned down from the original 5-9s / 60-70s (itself matched to the
+newsletter-cc-cl sibling's production figures at the time) -- 2,000+ real sends in
+this project showed no throttling/deliverability issues at the slower pace, so the
+inter-batch pause in particular was cut roughly in half per direct instruction.
 """
 from __future__ import annotations
 
@@ -86,13 +85,13 @@ def batch_size() -> int:
 
 
 def short_delay_range() -> tuple[float, float]:
-    return (_float_env("CMI_SEND_SHORT_DELAY_MIN", 5.0),
-            _float_env("CMI_SEND_SHORT_DELAY_MAX", 9.0))
+    return (_float_env("CMI_SEND_SHORT_DELAY_MIN", 6.0),
+            _float_env("CMI_SEND_SHORT_DELAY_MAX", 8.0))
 
 
 def long_pause_range() -> tuple[float, float]:
-    return (_float_env("CMI_SEND_LONG_PAUSE_MIN", 60.0),
-            _float_env("CMI_SEND_LONG_PAUSE_MAX", 70.0))
+    return (_float_env("CMI_SEND_LONG_PAUSE_MIN", 25.0),
+            _float_env("CMI_SEND_LONG_PAUSE_MAX", 40.0))
 
 
 def max_consecutive_failures() -> int:

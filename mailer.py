@@ -49,6 +49,67 @@ def _env(name: str, default: str = "") -> str:
 DEFAULT_REPLY_TO = ["ujjwal@coherentmarketinsights.com", "aditya@coherentmarketinsights.com"]
 
 
+# SendGrid's max `limit` for these endpoints is 500 -- a value above that is a 400
+# Bad Request. Ported from the sibling newsletter-cc-cl project's campaign.py.
+_SUPPRESSION_PAGE_LIMIT = 500
+
+
+def fetch_sendgrid_suppressed(api_key: str) -> set[str]:
+    """Every email SendGrid itself considers unsubscribed OR hard-bounced, across
+    the account.
+
+    db.mark_unsubscribed() exists but nothing in this project ever called it -- the
+    template's unsubscribe link points at a generic contact page, not a real
+    unsubscribe endpoint, so clicking it did nothing. This is the actual, working
+    signal: SendGrid's own suppression lists, populated automatically whenever a
+    recipient unsubscribes via any SendGrid-sent mail, hard-bounces, or lands in the
+    global suppression group.
+
+    Three endpoints, not two: `suppression/bounces` turned out NOT to be a subset of
+    `asm/suppressions/global` -- checked directly against this account's real data
+    (2026-10-07) and found 500+ bounce records with zero overlap against the other
+    two endpoints. Skipping it would silently keep re-sending to addresses SendGrid
+    has already confirmed are undeliverable.
+
+    Requires an API key with suppressions.read / asm.suppressions.global.read scope
+    -- the mail.send-only key already in use here cannot call these endpoints and
+    will get a 403.  Degrades to an empty set on any failure (missing scope, no key,
+    network error) rather than raising, so a key without this scope just means no
+    local pre-check -- SendGrid's own send-time enforcement still blocks a
+    suppressed address regardless (see stage_send).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    suppressed: set[str] = set()
+    if not api_key:
+        return suppressed
+    for path in ("suppression/unsubscribes", "asm/suppressions/global", "suppression/bounces"):
+        offset = 0
+        while True:
+            req = urllib.request.Request(
+                f"https://api.sendgrid.com/v3/{path}?limit={_SUPPRESSION_PAGE_LIMIT}&offset={offset}",
+                headers={"Authorization": f"Bearer {api_key}"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read())
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, TimeoutError,
+                    ConnectionError) as e:
+                print(f"  [suppression] fetch failed ({path}, offset={offset}): "
+                      f"{type(e).__name__}: {e} -- continuing with whatever was fetched so far",
+                      file=sys.stderr)
+                break
+
+            if not isinstance(data, list) or not data:
+                break
+            suppressed.update((item.get("email") or "").lower() for item in data if item.get("email"))
+            if len(data) < _SUPPRESSION_PAGE_LIMIT:
+                break  # last page
+            offset += _SUPPRESSION_PAGE_LIMIT
+    return suppressed
+
+
 def _reply_to_list(conn) -> list[str]:
     stored = dbmod.get_setting(conn, "reply_to", "")
     if stored:
@@ -83,11 +144,19 @@ def _provider() -> str:
     return "sendgrid" if _env("SENDGRID_WEB_API") else "smtp"
 
 
-def _send_via_sendgrid(html: str, to: str, subject: str, reply_to: list[str]) -> None:
-    """POST one message to the SendGrid v3 API.
+def _send_via_sendgrid(html: str, to: str, subject: str, reply_to: list[str]) -> str:
+    """POST one message to the SendGrid v3 API. Returns the X-Message-Id header
+    (empty string if SendGrid did not send one back).
 
     Uses urllib rather than the sendgrid SDK to avoid another dependency -- the
     payload is small and the call is a single POST.
+
+    The message ID is the only way to later match a reply or a bounce/complaint
+    webhook back to a specific send -- the sibling newsletter-cc-cl project's
+    send_brief.py learned this the hard way: several early runs' IDs only ever
+    existed in whatever log file happened to capture that run's console output,
+    and were unrecoverable once the terminal scrolled past. Returning it here
+    (not just printing it) is what lets the caller persist it into `sends`.
     """
     import json
     import urllib.error
@@ -125,6 +194,7 @@ def _send_via_sendgrid(html: str, to: str, subject: str, reply_to: list[str]) ->
         with urllib.request.urlopen(req, timeout=30) as r:
             if r.status not in (200, 202):
                 raise RuntimeError(f"SendGrid returned {r.status}")
+            return r.headers.get("X-Message-Id", "")
     except urllib.error.HTTPError as e:
         # SendGrid puts the actual reason in the body; the status alone is not
         # actionable (403 is usually an unverified sender, not a bad key).
@@ -133,9 +203,13 @@ def _send_via_sendgrid(html: str, to: str, subject: str, reply_to: list[str]) ->
 
 
 def send_html(source_html: str, to: str, subject: str, *, filename_hint: str = "brief",
-              conn=None) -> None:
+              conn=None) -> str:
     """Core sender: takes already-rendered browser HTML (not a path), converts it via
-    emailify(), and sends it to one recipient over SMTP."""
+    emailify(), and sends it to one recipient over SMTP.
+
+    Returns the SendGrid X-Message-Id (empty string over SMTP, which has no
+    equivalent) so a caller can persist it for later reply/bounce matching.
+    """
     # The 2026-09-16 bounce wave (~40% rejected 550 5.4.1 by Outlook/M365) was raw
     # Gmail SMTP from an unauthenticated domain. SendGrid is the fix that block asked
     # for, so it is not gated by the same switch -- but SMTP still is.
@@ -160,9 +234,10 @@ def send_html(source_html: str, to: str, subject: str, *, filename_hint: str = "
             _c.close()
 
     if provider == "sendgrid":
-        _send_via_sendgrid(html, to, subject, reply_to)
-        print(f"sent {filename_hint} -> {to} (sendgrid)")
-        return
+        msg_id = _send_via_sendgrid(html, to, subject, reply_to)
+        print(f"sent {filename_hint} -> {to} (sendgrid)"
+              + (f"  [X-Message-Id: {msg_id}]" if msg_id else ""))
+        return msg_id
 
     cfg = _smtp_config()
 
@@ -184,6 +259,7 @@ def send_html(source_html: str, to: str, subject: str, *, filename_hint: str = "
         server.sendmail(cfg["from_email"], [to], msg.as_string())
 
     print(f"sent {filename_hint} -> {to} (smtp)")
+    return ""
 
 
 def send(path: str | Path, to: str, subject: str | None = None) -> None:

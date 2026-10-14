@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import dataclasses
 import json
 import os
 import sys
@@ -96,7 +97,7 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
     import render
     from brief_builder import build_brief
     from collect import collect
-    from score import eligible, score_all
+    from score import eligible, is_unsafe_to_cite, score_all
     from tenant import Profile
 
     os.makedirs(outdir, exist_ok=True)
@@ -150,7 +151,15 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             scored = score_all(arts, profile)
             keep = eligible(scored)
             topic = lead.get("topic", "") if kind == "report" else ""
-            brief = build_brief(keep or scored, profile, log=lambda *_: None,
+            # `keep or scored`: a thin-coverage lead can score everything below
+            # min_composite, and falling back to the whole unfiltered pool rather than
+            # an empty brief is the right call for a low composite score -- but
+            # is_research_pr/ticker-noise are not "eligible, just ranked low", they are
+            # never safe to put in front of a reader (a rival firm's own report PR, or
+            # stock-ticker churn). Filter those out of the fallback pool too, so a thin
+            # lead can't silently reintroduce exactly what eligible() just removed.
+            fallback = [a for a in scored if not is_unsafe_to_cite(a)]
+            brief = build_brief(keep or fallback, profile, log=lambda *_: None,
                                 market_topic=topic)
             brief = brief[0] if isinstance(brief, tuple) else brief
             ctx = compose.build_context(profile, brief, kind, market_topic=topic,
@@ -171,22 +180,30 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
         return row
 
     results = []
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+    ex = cf.ThreadPoolExecutor(max_workers=workers)
+    try:
         futs = {ex.submit(one, j): j for j in jobs}
         for i, fut in enumerate(cf.as_completed(futs), 1):
             r = fut.result()
+            # Persist the profile that produced this brief so a later validation pass
+            # (even in a separate process/run) can reload it with zero extra LLM
+            # calls -- re-deriving competitors/value_prop via from_company() again is
+            # the exact duplicate LLM spend this is meant to avoid.
+            profile_json = json.dumps(dataclasses.asdict(r["profile"]), ensure_ascii=False) \
+                if r["profile"] is not None else ""
             # Store immediately: a crash later should not cost the briefs already made.
             r["brief_id"] = db.save_brief(
                 conn, email=r["email"], company=r["company"], kind=r["kind"],
                 topic=r["topic"], html=r["html"],
                 status="failed" if r["error"] else "generated",
-                gen_seconds=r["secs"], run_id=run_id)
+                validation={"fails": [r["error"]]} if r["error"] else None,
+                gen_seconds=r["secs"], run_id=run_id, profile_json=profile_json)
             results.append(r)
             flag = "ERROR" if r["error"] else "ok"
             _log(f"  [{i}/{len(jobs)}] {r['company'][:20]:<22}{r['kind']:<8}"
                  f"{flag:<6}{r['secs']:>6}s")
             if r["error"]:
-                _log(f"        {r['error'][:90]}")
+                _log(f"        {r['error']}")
 
             is_llm_error = r["error"].startswith("RuntimeError") and "LLM provider" in r["error"]
             if is_llm_error:
@@ -198,12 +215,18 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
                 aborted_for_llm_outage = True
                 _log(f"\n{'!' * 64}")
                 _log(f"  ABORTING: {llm_failure_streak} consecutive LLM failures -- "
-                     f"the endpoint is down, not a handful of bad leads. Cancelling "
-                     f"remaining unstarted jobs; briefs already in flight will still "
-                     f"finish (or fail) and be recorded.")
+                     f"the endpoint is down, not a handful of bad leads. Stopping "
+                     f"immediately: cancelling every unstarted job and NOT waiting on "
+                     f"jobs already in flight (their eventual result, if any, is "
+                     f"discarded rather than delaying the abort).")
                 _log(f"{'!' * 64}")
-                for pending_fut in futs:
-                    pending_fut.cancel()
+                break
+    finally:
+        # cancel_futures drops every not-yet-started job; wait=False returns immediately
+        # instead of blocking on threads already mid-call to a dead/overloaded endpoint --
+        # those threads keep running in the background (Python cannot force-kill a
+        # thread) but the function returns now rather than after every one times out.
+        ex.shutdown(wait=False, cancel_futures=True)
 
     if aborted_for_llm_outage:
         raise RuntimeError(
@@ -224,8 +247,16 @@ def stage_validate(conn, results: list[dict]) -> dict:
         if r.get("error") or not r.get("path"):
             counts["ERROR"] += 1
             continue
+        # expected_subject independent of r["profile"]: a signal brief's subject is the
+        # lead's own company (r["company"], straight from the leads table); a report
+        # brief's is the market/report name the lead enquired about (r["topic"]). Never
+        # profile.company -- that is exactly the field a bad profile gets wrong (see
+        # tenant.Profile.from_company's docstring).
+        expected_subject = r.get("topic") if r.get("kind") == "report" else r.get("company")
         try:
-            fails, warns, llm_fails, llm_warns = vb.check_detailed(r["path"], r["profile"])
+            fails, warns, llm_fails, llm_warns = vb.check_detailed(
+                r["path"], r["profile"], email=r.get("email", ""),
+                kind=r.get("kind", ""), topic=expected_subject or "")
         except Exception as e:  # noqa: BLE001 -- a broken check must not fail the brief
             fails, warns, llm_fails, llm_warns = [], [f"validator error: {type(e).__name__}: {e}"], [], []
         # Text-rule status first -- this is what actually gates sending, unchanged from
@@ -307,6 +338,18 @@ def stage_send(conn, run_id: int, campaign: str, *, dry_run: bool, limit: int,
         rows = rows[:limit]
     _log(f"  {len(rows)} briefs clear to send")
 
+    # SendGrid's own suppression lists are the only unsubscribe signal that actually
+    # works today -- the template's unsubscribe link is cosmetic (points at a generic
+    # contact page, not a real endpoint), so nothing ever populates `unsubscribes`
+    # locally any other way. Fetched once up front; db.is_unsubscribed() (already
+    # checked per-send below) then sees it like any other local suppression.
+    api_key = mailer._env("SENDGRID_WEB_API")
+    remote_suppressed = mailer.fetch_sendgrid_suppressed(api_key)
+    if remote_suppressed:
+        _log(f"  {len(remote_suppressed)} address(es) on SendGrid's suppression list")
+        for email in remote_suppressed:
+            db.mark_unsubscribed(conn, email, reason="SendGrid suppression list")
+
     size = sp.batch_size()
     short_range = sp.short_delay_range()
     long_range = sp.long_pause_range()
@@ -337,9 +380,9 @@ def stage_send(conn, run_id: int, campaign: str, *, dry_run: bool, limit: int,
             skipped += 1
             return "skipped"
         try:
-            mailer.send_html(full["html"], email, subject, filename_hint=email, conn=conn)
+            msg_id = mailer.send_html(full["html"], email, subject, filename_hint=email, conn=conn)
             db.record_send(conn, email=email, status="sent", subject=subject,
-                           campaign=campaign)
+                           campaign=campaign, message_id=msg_id)
             db.set_brief_status(conn, r["id"], "sent")
             db.set_lead_status(conn, email, "sent")
             _log(f"  {progress} sent  {email}")
@@ -356,6 +399,17 @@ def stage_send(conn, run_id: int, campaign: str, *, dry_run: bool, limit: int,
     try:
         position = 0
         for batch_idx, batch in enumerate(batches, start=1):
+            # Fetched ONCE up front (see above), not per batch: with 30k+ records
+            # across 3 paginated endpoints, a per-batch re-fetch was roughly
+            # doubling the real wall-clock time of a large run for marginal
+            # protection SendGrid already provides for free -- a genuinely
+            # suppressed address still gets blocked at SendGrid's own send-time
+            # enforcement regardless of what our local cache knows (see mailer.
+            # send_html's underlying API call). The only cost of NOT re-fetching
+            # mid-run is a `sends` row that says "sent" when the real outcome was
+            # an immediate suppression bounce -- acceptable, since reconciling
+            # delivery outcomes after the fact (not pre-empting them) is the
+            # correct job of a separate post-send report, not this loop.
             batch_did_work = False
             _log(f"  -- batch {batch_idx}/{len(batches)} --")
             for i, r in enumerate(batch, start=1):

@@ -269,8 +269,12 @@ LLM = {
     # 40-worker batch that silently drains effective concurrency with no error or log
     # line, only the run taking longer than expected for no visible reason. A brief's
     # own calls run sequentially and each asks for at most ~1600 tokens, so a genuine
-    # response is seconds, not minutes; 90s is generous headroom for a busy server
-    # while still catching a truly wedged request well before it costs real time.
+    # response is seconds, not minutes -- but under real batch load (40 workers sharing
+    # one GPU's request queue), individual calls occasionally sit queued long enough to
+    # blow past a tight timeout even though the server is healthy: measured 6/171 calls
+    # (3.5%) timing out at 90s during a real 40-worker run with no other sign of trouble
+    # (never enough to trip the consecutive-failure abort). 180s gives a queued call
+    # room to clear under load while still catching a truly wedged request.
     # Override with CMI_LLM_TIMEOUT_SECS if a slower endpoint needs more.
-    "timeout_secs": 90,
+    "timeout_secs": 180,
 }

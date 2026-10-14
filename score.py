@@ -30,6 +30,14 @@ def _is_ticker_noise(a: Article) -> bool:
     return bool(_TICKER_NOISE.search(f"{a.title} {a.summary}"))
 
 
+def is_unsafe_to_cite(a: Article) -> bool:
+    """Ticker noise or a rival research firm's own report PR -- never safe to show a
+    reader regardless of composite score, unlike an ordinary low-relevancy article.
+    Exposed so a caller falling back to the unfiltered pool (pipeline.stage_generate's
+    `keep or scored`, for a thin-coverage lead) can still exclude these two."""
+    return _is_ticker_noise(a) or config.is_research_pr(a.source, a.title)
+
+
 def _text(a: Article) -> str:
     return f"{a.title} {a.summary}".lower()
 
@@ -137,4 +145,14 @@ def score_all(articles: list[Article], profile) -> list[Article]:
 
 
 def eligible(articles: list[Article]) -> list[Article]:
-    return [a for a in articles if a.composite >= _S["min_composite"] and not _is_ticker_noise(a)]
+    # config.is_research_pr exists specifically to keep a rival market-research firm's
+    # own report PR (MarketsandMarkets, Grand View, Mordor Intelligence, ...) out of a
+    # CMI newsletter -- CMI must never cite a competitor's numbers to its own client,
+    # let alone build a whole "Market Moves" section around one and link to it as the
+    # source. The function was written and documented but never actually called from
+    # anywhere, so this kept happening in real sends (caught 2026-10-08: an American
+    # Roller brief whose Market Moves section was MarketsandMarkets' own press
+    # release, "Source: MarketsandMarkets ->" link included). Filtering here, in the
+    # one function every section's candidate pool passes through, closes it for all
+    # of them at once rather than patching each section separately.
+    return [a for a in articles if a.composite >= _S["min_composite"] and not is_unsafe_to_cite(a)]
