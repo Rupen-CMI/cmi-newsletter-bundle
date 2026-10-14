@@ -22,6 +22,11 @@ validate_tmp_report/
 *.db-shm
 *.db
 
+# LoRA adapter weights -- 300MB+, exceeds GitHub's file size limits. Lives on disk
+# for local use (uploaded to a GPU instance for merging) but is never committed.
+training_data/adapter/*.bin
+training_data/adapter/*.safetensors
+
 # Per-run send/validate artifacts -- reproducible, recipient-identifying, or scratch scripts.
 send_ids_*.json
 send_ids_run*.json
