@@ -96,7 +96,7 @@ def main() -> None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(html)
 
-            fails, warns = vb.check(path, profile)
+            fails, warns = vb.check(path, profile, kind=kind)
             row.update(status="FAIL" if fails else ("WARN" if warns else "PASS"),
                        secs=round(time.time() - t0), fails=fails, warns=warns)
         except Exception as e:  # noqa: BLE001 -- one bad lead must not lose the batch

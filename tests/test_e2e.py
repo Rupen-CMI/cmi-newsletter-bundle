@@ -35,7 +35,9 @@ _FAKE = {
     "counter_play": [{"title": "Move first.", "body_html": "Contact them now."}],
     "bullets": ["<b>Lead.</b> Support line.", "<b>Two.</b> Support.", "<b>Three.</b> Support."],
     "headline": "Widget Demand Rises", "body_html": "Demand is rising across the sector.",
-    "lede": "CMI tracked three signals this week.",
+    "lede": "This week's brief covers three signals: a <b>potential customer</b> "
+            "expanding capacity, the <b>industry outlook</b> on rising demand, and "
+            "a <b>competitor move</b> from RivalCo.",
     "top3": ["<b>One.</b> Support.", "<b>Two.</b> Support.", "<b>Three.</b> Support."],
     "take_customer": "x", "take_competition": "x", "take_industry": "x",
     "industry": "industrial widgets",

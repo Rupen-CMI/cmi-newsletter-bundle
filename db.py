@@ -164,6 +164,20 @@ def init_db(conn: sqlite3.Connection) -> None:
         endpoint    TEXT,
         notes       TEXT
     );
+
+    -- Internal CMI staff who review a sample of each day's generated briefs before/
+    -- alongside live sends (not newsletter recipients -- never pulled into any
+    -- leads/sends campaign query). One row per EMAIL ADDRESS, not per person: a
+    -- reviewer can hold several inboxes (e.g. Raj checks a .info alias, a .com alias,
+    -- and a personal Gmail) and each gets its own row so a mailout script can treat
+    -- the whole table as a flat recipient list with no per-person de-duplication.
+    CREATE TABLE IF NOT EXISTS evaluators (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        email       TEXT NOT NULL UNIQUE,
+        name        TEXT,
+        active      INTEGER DEFAULT 1,   -- 0 to stop sending without deleting the row
+        created_at  TEXT NOT NULL
+    );
     """)
     conn.commit()
     _migrate_leads_columns(conn)
@@ -542,6 +556,28 @@ def finish_run(conn: sqlite3.Connection, run_id: int, *, n_briefs: int = 0,
 
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def upsert_evaluator(conn: sqlite3.Connection, *, email: str, name: str = "",
+                     commit: bool = True) -> None:
+    """Add/update one evaluator inbox. Idempotent on email -- re-running a seed list is
+    always safe. `name` is informational only (several rows can share one person's
+    name, see the evaluators table comment in init_db)."""
+    conn.execute(
+        """INSERT INTO evaluators(email, name, active, created_at)
+           VALUES (?, ?, 1, ?)
+           ON CONFLICT(email) DO UPDATE SET name=excluded.name""",
+        (email.strip().lower(), name.strip(), _now()),
+    )
+    if commit:
+        conn.commit()
+
+
+def list_evaluators(conn: sqlite3.Connection, *, active_only: bool = True) -> list[sqlite3.Row]:
+    if active_only:
+        return conn.execute(
+            "SELECT * FROM evaluators WHERE active=1 ORDER BY id").fetchall()
+    return conn.execute("SELECT * FROM evaluators ORDER BY id").fetchall()
 
 
 def brief_subject(company: str, kind: str = "", topic: str = "") -> str:

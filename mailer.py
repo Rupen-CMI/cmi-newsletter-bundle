@@ -49,6 +49,17 @@ def _env(name: str, default: str = "") -> str:
 DEFAULT_REPLY_TO = ["ujjwal@coherentmarketinsights.com", "aditya@coherentmarketinsights.com"]
 
 
+def sender_pool() -> list[str]:
+    """Every verified sender address available to draw from. SENDER_EMAIL_POOL in
+    .env is comma-separated; falls back to the single SENDER_EMAIL if unset so
+    existing behavior is unchanged for callers that don't use a pool."""
+    raw = _env("SENDER_EMAIL_POOL")
+    if raw:
+        return [a.strip() for a in raw.split(",") if a.strip()]
+    single = _env("SENDER_EMAIL")
+    return [single] if single else []
+
+
 # SendGrid's max `limit` for these endpoints is 500 -- a value above that is a 400
 # Bad Request. Ported from the sibling newsletter-cc-cl project's campaign.py.
 _SUPPRESSION_PAGE_LIMIT = 500

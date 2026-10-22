@@ -178,7 +178,7 @@ def main() -> None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(html)
 
-            fails, warns = vb.check(path, profile)
+            fails, warns = vb.check(path, profile, kind=kind)
             row.update(path=path, fails=fails, warns=warns,
                        status="FAIL" if fails else ("WARN" if warns else "PASS"),
                        secs=round(time.time() - t0))

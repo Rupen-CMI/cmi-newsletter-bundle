@@ -35,3 +35,6 @@ brief_check_*.txt
 token_usage.jsonl
 validate_tmp_report/*
 session_scratch/*
+
+# One-off audit notes, not part of the shipped codebase.
+PIPELINE_AUDIT.md

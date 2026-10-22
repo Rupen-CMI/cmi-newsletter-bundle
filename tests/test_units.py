@@ -228,6 +228,45 @@ class TestStructureValidation:
         assert validate_brief.name_overlap("Bharat Forge Ltd", "Bharat Forge")
         assert not validate_brief.name_overlap("Bharat Forge", "Tata Steel")
 
+    def test_story_section_with_no_flag_separator_is_not_missing(self):
+        """2026-10-19: compose._story() always sets flag="" for Industry Outlook, and
+        templates/cmi_brief.html's story branch renders the bare label ("Industry
+        Outlook") with no "· <subcategory>" suffix -- unlike a prospect section,
+        which always has one ("Potential Customer · fintech"). The old STRUCTURE
+        check's "<label> ·" regex never matches a bare label, so a real, fully
+        written Industry Outlook section read as entirely missing until this was
+        fixed with a fallback match on the bare label."""
+        import validate_brief
+
+        html = f"""
+<html><body>
+<h2>Potential Customer · Razorpay</h2><p>{_LOREM}</p>
+<h3>Industry Outlook</h3><p>{_LOREM}</p>
+<h2>Competition Outlook · Slice</h2><p>{_LOREM}</p>
+</body></html>
+"""
+        fails, warns = validate_brief.check_html(html, _profile())
+        assert not [f for f in fails if "section" in f.lower()]
+        assert not [w for w in warns if "MISSING SECTION" in w]
+
+    def test_report_brief_two_sections_is_not_missing_a_third(self):
+        """2026-10-19: report briefs are capped at 2 sections (Your Market +
+        Competition Outlook) -- the old "Market Moves" middle slot is no longer
+        generated at all. Checking a report brief against the signal brief's
+        3-section list warned every correctly-built report brief for a section it
+        was never supposed to have."""
+        import validate_brief
+
+        html = f"""
+<html><body>
+<h2>Your Market · widgets</h2><p>{_LOREM}</p>
+<h2>Competition Outlook · Slice</h2><p>{_LOREM}</p>
+</body></html>
+"""
+        fails, warns = validate_brief.check_html(html, _profile(), kind="report")
+        assert not [f for f in fails if "section" in f.lower()]
+        assert not [w for w in warns if "MISSING SECTION" in w]
+
 
 # ── mail provider selection ───────────────────────────────────────────────────
 class TestMailProvider:
@@ -332,12 +371,14 @@ class TestLinks:
     citations were not linked, and the unsubscribe href was a literal "#"."""
 
     def test_demo_url_is_the_live_analyst_path(self):
-        """It is /talkwithanalyst, NOT /talktoanalyst -- the latter 404s. Checked
-        against the live site; pinned here so a plausible-looking 'fix' cannot
-        silently break every CTA in every brief."""
+        """2026-10-19: moved off coherentmarketinsights.com/talkwithanalyst to the new
+        cmiinsights.info site, matching the sample briefs in
+        session_scratch/final_4_picks/fortinet_*.html. Pinned here so a
+        plausible-looking 'fix' cannot silently break every CTA in every brief."""
         import compose
 
-        assert compose.DEMO_URL.endswith("/talkwithanalyst")
+        assert compose.DEMO_URL == "https://www.cmiinsights.info/speakwithanalyst"
+        assert compose.SITE_ROOT == "https://www.cmiinsights.info"
 
     def test_unsubscribe_is_not_a_dead_anchor(self):
         """A '#' unsubscribe is worse than none: bulk filters look for a working

@@ -1,13 +1,14 @@
 """Turn pipeline output into the template context for either brief type.
 
-Two brief types, one template (`templates/cmi_brief.html`) because they are
-structurally identical:
+Two brief types, one template (`templates/cmi_brief.html`):
 
-  signal  -- Potential Customer / Industry Outlook / Competition Outlook
-  report  -- Your Market      / Industry Outlook / Competition Outlook
+  signal  -- Potential Customer / Industry Outlook / Competition Outlook  (3 sections)
+  report  -- Your Market                          / Competition Outlook  (2 sections)
 
-The only real difference is section 1: the signal brief profiles a prospect, the
-report brief profiles the market the reader asked about.
+Section 1 differs in content (signal profiles a prospect, report profiles the market
+the reader asked about) and report briefs drop the middle section (Market Moves)
+entirely rather than filling it -- see the section-2 comment below. CTA copy/URLs
+and the footer CTA also differ by kind; see voice.ctas/voice.footer_cta.
 """
 from __future__ import annotations
 
@@ -21,12 +22,15 @@ import social_proof
 import voice
 
 HERE = os.path.dirname(__file__)
-DEMO_URL = "https://www.coherentmarketinsights.com/talkwithanalyst"
+# 2026-10-19: moved off coherentmarketinsights.com to the new cmiinsights.info site,
+# per the sample briefs in session_scratch/final_4_picks/fortinet_*.html. Each CTA
+# appends its own path (see voice.ctas/voice.footer_cta) -- this is the site root.
+SITE_ROOT = "https://www.cmiinsights.info"
+DEMO_URL = f"{SITE_ROOT}/speakwithanalyst"
 
-# An "Unsubscribe" that goes nowhere ("#") is worse than none: bulk filters look for a
-# working opt-out, and a dead one invites spam reports. Point it at the site's contact
-# page until a per-recipient unsubscribe endpoint exists.
-UNSUB_URL = os.getenv("CMI_UNSUB_URL", "https://www.coherentmarketinsights.com/contact-us")
+# 2026-10-19: matches the dedicated unsubscribe endpoint used in the same sample
+# briefs, replacing the old contact-us page fallback.
+UNSUB_URL = os.getenv("CMI_UNSUB_URL", "https://unsubs-kohl.vercel.app/")
 
 
 def _clean(s: str) -> str:
@@ -106,24 +110,25 @@ def analyst_bullets_multi(profile, signals: list[str]) -> list[list[str]]:
     return out
 
 
-# The six engagement dimensions, in the order caps_projects asks for them. Used as the
-# fallback when a returned title is too mangled to salvage a dimension from.
+# 2026-10-19: cut from 6 engagement cards to 4, matching the cmiinsights.info redesign
+# sample (final_4_picks/fortinet_*.html both show exactly Project 01-04). Dropped
+# "competitor and pipeline" and "market entry" rather than any of the first four.
 _DIMENSIONS = ("supplier and demand", "capacity and input supply", "pricing and access",
-               "customer readiness and adoption", "competitor and pipeline", "market entry")
+               "customer readiness and adoption")
 
 
 def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> tuple[str, list[dict]]:
-    """Six real-looking past CMI engagements for the Inside CMI panel.
+    """Four real-looking past CMI engagements for the Inside CMI panel.
 
-    `subject` is the market these six projects must actually be about: for a report
+    `subject` is the market these four projects must actually be about: for a report
     brief, that is `market_topic` (the exact market the recipient asked about) --
     not the seller's own product space, which is irrelevant to a report brief and
     produced engagements about the wrong market entirely. For a signal brief, it is
     the seller's own sub-market (profile.industries / curated override), as before.
-    Each of the six must cover a DIFFERENT sub-market or tightly-related market
-    within that subject, not six rephrasings of the same umbrella term -- confirmed
-    as a real quality problem 2026-10-12: six cards all titled "X industry outlook,
-    <dimension> landscape" read as filler, not six distinct project case studies.
+    Each of the four must cover a DIFFERENT sub-market or tightly-related market
+    within that subject, not four rephrasings of the same umbrella term -- confirmed
+    as a real quality problem 2026-10-12: cards all titled "X industry outlook,
+    <dimension> landscape" read as filler, not distinct project case studies.
     """
     import tenant as _tenant
     _ov = _tenant._overrides_for(getattr(profile, "company", ""))
@@ -131,23 +136,21 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
                (_ov.get("caps_industry") or "").strip() or ", ".join(profile.industries[:2]))
 
     system = (
-        "You describe six real-looking past engagements Coherent Market Insights has "
+        "You describe four real-looking past engagements Coherent Market Insights has "
         "delivered, to show the reader CMI's depth of experience in this exact space. "
         "These read like an actual project list on a case-study slide -- a scope and a "
-        "deliverable -- not a marketing tagline and not six rephrasings of the same "
+        "deliverable -- not a marketing tagline and not four rephrasings of the same "
         "generic title.\n\n"
-        "Each of the six projects must be about a DIFFERENT sub-market or tightly "
+        "Each of the four projects must be about a DIFFERENT sub-market or tightly "
         "related market within the subject given, named explicitly in the title (e.g. "
         "for 'cybersecurity': network firewalls, SASE, OT/industrial security, "
-        "zero-trust, endpoint security, threat intelligence -- six different named "
-        "segments, not 'cybersecurity' six times). Titles are short, concrete, and "
-        "sound like a real study: 'Next-gen firewall capacity assessment, APAC region', "
-        "'SASE pricing benchmark across mid-market buyers', 'OT security vendor "
-        "tracker, manufacturing sector'. Cover these six angles across the six "
-        "projects: supplier and demand, manufacturing or capacity, pricing and access, "
-        "customer readiness, competitor tracking, and market entry -- but let each "
-        "title's wording vary naturally; do not force every title into one repeated "
-        "sentence pattern.\n\n"
+        "zero-trust -- four different named segments, not 'cybersecurity' four "
+        "times). Titles are short, concrete, and sound like a real study: 'Next-gen "
+        "firewall capacity assessment, APAC region', 'SASE pricing benchmark across "
+        "mid-market buyers'. Cover these four angles across the four projects: "
+        "supplier and demand, manufacturing or capacity, pricing and access, and "
+        "customer readiness -- but let each title's wording vary naturally; do not "
+        "force every title into one repeated sentence pattern.\n\n"
         "NEVER name the seller or its products in a title or body. These are "
         "engagements delivered for OTHER, unnamed clients in the same space, and "
         "writing the seller's own product name into one turns it into a fabricated "
@@ -159,14 +162,13 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
             f"SELLER (context only, do not name in output): {profile.company} — {profile.value_prop}\n\n"
             'Return JSON {"industry":"<short phrase for the intro line, naming the subject>",'
             '"projects":[{"title":"...","body_html":"2 sentences, <b> allowed"}]} '
-            "with exactly 6 projects, each about a different named sub-market of the "
+            "with exactly 4 projects, each about a different named sub-market of the "
             "subject above, covering supplier and demand, manufacturing or capacity, "
-            "pricing and access, customer readiness, competitor tracking, and market "
-            "entry across the six.\n"
+            "pricing and access, and customer readiness across the four.\n"
             f"Do not write the words '{profile.company}' anywhere in the output.")
-    data = llm.chat_json(system, user, max_tokens=1600, default={}) or {}
+    data = llm.chat_json(system, user, max_tokens=1200, default={}) or {}
     projects = [{"title": _clean(p.get("title", "")), "body_html": _clean(p.get("body_html", ""))}
-                for p in (data.get("projects") or [])][:6]
+                for p in (data.get("projects") or [])][:4]
     industry = _clean(data.get("industry", "")) or subject
 
     # Repair what the model got wrong rather than shipping it: strip the seller's own
@@ -180,12 +182,15 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
             p["body_html"] = re.sub(rf"\b{re.escape(bit)}\b", "the client", p["body_html"], flags=re.I)
         if not p["title"]:
             p["title"] = f"{industry} {_DIMENSIONS[i % len(_DIMENSIONS)]} study"
-    while len(projects) < 6:                       # never render an empty card
+    while len(projects) < 4:                       # never render an empty card
         projects.append(projects[len(projects) % max(1, len(projects))] if projects
                         else {"title": f"{industry} supplier and demand study",
                               "body_html": "Supplier base, demand and spending patterns mapped "
                                            "across the client's priority countries."})
     return industry, projects
+
+
+_LEDE_COUNT_WORD = {1: "one", 2: "two", 3: "three", 4: "four"}
 
 
 def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
@@ -194,54 +199,39 @@ def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
               + voice.active_style())
     body = "\n".join(f"[{s['label']}] {s['title']}: {re.sub(r'<[^>]+>', '', s['body_html'])[:280]}"
                      for s in sections)
-    # "CMI tracked N signals this week" is hardcoded rather than left to the model:
-    # it is CMI (the research firm) doing the tracking, never the client reading the
-    # brief, and that is not a judgement call an LLM should be trusted to render
-    # consistently -- a prompt instruction alone produced "Masdar tracks three
-    # signals" in a live brief (the client as the subject of its own tracking),
-    # confirmed 2026-10-12. The model only writes what comes after the fixed opening.
-    opener = f"CMI tracked {len(sections)} signal{'s' if len(sections) != 1 else ''} this week."
+    n = len(sections)
+    count_word = _LEDE_COUNT_WORD.get(n, str(n))
+    # 2026-10-21 cmiinsights.info redesign: the lede opens with "This week's brief
+    # covers N signals: ..." rather than the old "CMI tracked N signals this week."
+    # -- the fixed count/noun ("N signals") is still hardcoded for the same reason
+    # as before (a count is not a judgement call to leave to the model), but the
+    # per-signal clauses are genuinely new prose each time, so they can't be a fixed
+    # string -- the model writes the whole sentence, just told exactly how many
+    # clauses and what each clause's fixed label text must be.
+    clause_spec = "; ".join(f'clause {i+1} about the {s["label"].lower()}'
+                             for i, s in enumerate(sections))
     user = (f"CLIENT: {profile.company} ({profile.short}) — {profile.value_prop}\n"
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
             f"VERTICALS TRACKED: {', '.join(profile.industries)}\n"
             f"SECTIONS:\n{body}\n\n"
-            'Return JSON {"lede":"one short sentence per signal, then one sentence on '
-            'what they mean together","top3":["...","...","..."]}. '
-            f"The lede continues directly after this fixed opening (do not repeat it): "
-            f"\"{opener}\". Each top3 line is a bolded claim in <b></b> then one plain "
+            'Return JSON {"lede":"...","top3":["...","...","..."]}. '
+            f'The lede is ONE sentence: "This week\'s brief covers {count_word} '
+            f"signal{'s' if n != 1 else ''}: " + clause_spec + ", each clause a "
+            "short bolded label phrase in <b></b> (the section's own subject, e.g. "
+            "\"a <b>potential customer</b>\" or \"the <b>industry outlook</b>\" or "
+            "\"a <b>competitor move</b>\") followed by a few words naming the "
+            "specific signal, joined with commas and \"and\" before the last clause. "
+            "Do not add any sentence after this one. "
+            "Each top3 line is a bolded claim in <b></b> then one plain "
             "sentence on why it matters. Same order as SECTIONS.")
     data = llm.chat_json(system, user, max_tokens=1000, default={}) or {}
     lede = _clean(data.get("lede", ""))
-    # The model is told not to repeat the opener, but "do not repeat it" is exactly
-    # the kind of instruction-following this file does not trust for anything load-
-    # bearing (same reasoning as hardcoding `opener` itself) -- confirmed live on
-    # 2026-10-13: 9 of 30 sampled briefs opened with "CMI tracked N signals this
-    # week." twice, because the model's own lede independently started with that
-    # same sentence (unsurprising, since real briefs it saw during training all
-    # open that way). Strip a leading or trailing echo of the opener before
-    # concatenating, so the hardcoded opener can never end up duplicated regardless
-    # of what the model does with the instruction.
-    def _strip_opener_echo(s: str) -> str:
-        stripped = s
-        for _ in range(2):  # the model has been seen repeating it at both ends
-            stripped = re.sub(r'^\s*CMI tracked \d+ signals?\s+this week\.\s*',
-                              '', stripped, flags=re.I)
-            stripped = re.sub(r'\s*CMI tracked \d+ signals?\s+this week\.\s*$',
-                              '', stripped, flags=re.I)
-        # Also seen restating the CLIENT (not CMI) as the one tracking, as a second
-        # sentence right after the opener -- "Peak Strategic tracks 3 signals this
-        # week." immediately following the correct CMI opener, confirmed 2026-10-13.
-        # Same instruction-following gap as the CMI-echo case above, just with the
-        # client's own name standing in for "CMI".
-        name_bits = [b for b in re.split(r"[\s,]+", profile.company or "") if len(b) > 2]
-        for name in ([profile.short or ""] + name_bits):
-            if name:
-                stripped = re.sub(
-                    rf'^\s*{re.escape(name)}\s+tracks?\s+\d+\s+signals?\s+this week\.\s*',
-                    '', stripped, flags=re.I)
-        return stripped.strip()
-    lede = _strip_opener_echo(lede)
-    lede = f"{opener} {lede}".strip() if lede else opener
+    # Guard against the model dropping the fixed opening entirely (seen with the old
+    # hardcoded-opener design too) -- if it's missing, prepend it so the lede never
+    # starts cold with a bare clause list.
+    fixed_opening = f"This week's brief covers {count_word} signal{'s' if n != 1 else ''}:"
+    if not re.match(r"^\s*this week.?s brief covers", lede, flags=re.I):
+        lede = f"{fixed_opening} {lede}".strip() if lede else f"{fixed_opening.rstrip(':')}."
     lines = [_clean(x) for x in (data.get("top3") or [])][:3]
     while len(lines) < len(sections):
         i = len(lines)
@@ -328,14 +318,11 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
                                   ("Why now", "Who to target")))
 
     # -- section 2 -------------------------------------------------------------
-    # Report briefs get Market Moves here; signal briefs keep Industry Outlook. The two
-    # never both appear, so a report brief stays three sections long.
-    moves = brief.get("market_moves") or {}
-    if kind == "report" and moves:
-        log("    · section 2: market moves")
-        sections.append(_prospect("Market Moves", moves,
-                                  ("Who is moving", "What it signals")))
-    elif news:
+    # 2026-10-19: report briefs are capped at 2 sections (Your Market + Competition
+    # Outlook), per the cmiinsights.info redesign sample -- Market Moves is dropped
+    # entirely rather than filling a middle slot, so this whole section only ever
+    # renders for a signal brief now.
+    if kind != "report" and news:
         log("    · section 2: industry outlook")
         sections.append(_story("Industry Outlook", news.get("headline", ""),
                                news.get("body_html", ""),
@@ -361,9 +348,12 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
     log("    · editorial (lede + top 3)")
     lede, top3 = editorial(profile, sections)
 
-    cta_set = voice.ctas(DEMO_URL, DEMO_URL)
+    cta_set = voice.ctas(kind, SITE_ROOT)
+    topic_for_cta = market_topic or profile.company
     for i, s in enumerate(sections):
-        s["cta"] = cta_set[i % len(cta_set)]
+        cta = dict(cta_set[i % len(cta_set)])
+        cta["q"] = cta["q"].format(topic=topic_for_cta, topic_lower=topic_for_cta.lower())
+        s["cta"] = cta
 
     log("    · Inside CMI projects")
     caps_industry, projects = caps_projects(profile, kind=kind, market_topic=market_topic)
@@ -378,6 +368,8 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
               else f"CMI's {market_topic.lower()} and adjacent coverage" if market_topic
               else "CMI's market coverage")
 
+    foot_cta = voice.footer_cta(kind, SITE_ROOT)
+
     return {
         "company": profile.company,
         "recipient": profile.recipient,
@@ -386,7 +378,9 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
                   "date_long": now.strftime("%A, %B %d, %Y"),
                   "prov_date": now.strftime("%b %d, %Y"),
                   "tagstrip_source": source,
-                  "demo_url": DEMO_URL,
+                  "demo_url": foot_cta["url"],
+                  "footer_cta_label": foot_cta["label"],
+                  "footer_ctaq": foot_cta["ctaq"],
                   "unsub_url": UNSUB_URL},
         "lede": lede,
         "top3": top3,

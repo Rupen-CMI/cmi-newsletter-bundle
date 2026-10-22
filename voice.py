@@ -71,24 +71,47 @@ as hard rules, not style preferences:
 """.strip()
 
 
-# CTA copy, shared by both brief types so they cannot drift apart.
-def ctas(demo_url: str, consult_url: str) -> list[dict]:
+# 2026-10-19: CTA copy and URLs now differ by brief type, per the cmiinsights.info
+# redesign sample (final_4_picks/fortinet_*). Signal briefs point every CTA at
+# /speakwithanalyst; report briefs use a different path per CTA
+# (/request-full-report, /custom-research) because each one asks for something
+# distinct (the full report vs. a custom study), not a generic "talk to someone".
+def ctas(kind: str, base_url: str) -> list[dict]:
+    """`base_url` is the site root (e.g. https://www.cmiinsights.info) -- each CTA
+    appends its own path so signal and report briefs can point at different pages
+    without the caller needing to know which path goes where."""
+    root = base_url.rstrip("/")
+    if kind == "report":
+        return [
+            {"q": "Want the entire 250+ page {topic} report?",
+             "sub": "", "label": "Get the full report", "url": f"{root}/request-full-report"},
+            {"q": "Want personalised or custom research executed on the {topic_lower} industry?",
+             "sub": "Do you have any specific pain points and business objectives? "
+                    "Get a solution customised to your objectives.",
+             "label": "Get a customised solution", "url": f"{root}/custom-research"},
+        ]
     return [
         {"q": "Would you want to know the roadmap to tap into the next million-dollar opportunity?",
-         "sub": "Get access to our lead consultant. They will guide you on positioning "
-                "and market entry strategy to capitalise on this opportunity.",
-         "label": "Schedule a call with a lead consultant", "url": consult_url},
+         "sub": "", "label": "Schedule a call with a lead consultant",
+         "url": f"{root}/speakwithanalyst"},
         {"q": "Want access to a real-time tracker on the shifts that could impact your business?",
-         "sub": "CMI Intelligence covers changing trends, shifts in market dynamics, "
-                "whitespaces and the roadmap to the next million-dollar opportunity in "
-                "the industry.",
-         "label": "Schedule a meeting with our analyst team", "url": demo_url},
+         "sub": "", "label": "Schedule a meeting with our analyst team",
+         "url": f"{root}/speakwithanalyst"},
         {"q": "Want competitor movement flagged as it happens in your categories?",
-         "sub": "A daily tracker mapped to your competitors, tracking their key market "
-                "moments. It includes detailed intelligence on financials, "
-                "strategy roadmap, key developments, operational moves and more.",
-         "label": "Schedule the call with the team", "url": demo_url},
+         "sub": "", "label": "Schedule the call with the team",
+         "url": f"{root}/speakwithanalyst"},
     ]
+
+
+# Footer CTA differs by brief type too: signal briefs keep the plain "book a demo"
+# ask; report briefs close on a more specific, pain-point-led ask instead.
+def footer_cta(kind: str, base_url: str) -> dict:
+    root = base_url.rstrip("/")
+    if kind == "report":
+        return {"ctaq": "Do you have specific pain points or business objectives?",
+                "label": "Get a solution built around your objectives",
+                "url": f"{root}/business-objectives"}
+    return {"ctaq": "", "label": "Get on a Demo Call", "url": f"{root}/speakwithanalyst"}
 
 
 # Compact reminder for a model that was FINE-TUNED on STYLE. The full block is ~687

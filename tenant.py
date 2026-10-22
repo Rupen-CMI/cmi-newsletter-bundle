@@ -229,16 +229,23 @@ class Profile:
             "  value_prop — one sentence: what the seller sells and to whom\n"
             "  target_industries — 4 to 7 CUSTOMER verticals that BUY from the seller (its buyers). Do NOT list "
             "the seller's own product category here.\n"
-            f"  competitors — 4 to 8 real companies in the seller's OWN product category that sell a directly "
-            f"substitutable product{' active in ' + market if market != 'Global' else ''}. Same vertical only: "
-            "a buyer chooses the seller OR this company, not both. Name companies that sell the SAME PRODUCT "
-            "TYPE stated in value_prop — if the seller makes a cell therapy, list other cell-therapy developers, "
-            "not contract manufacturers, not services firms, not generics makers, however large or nearby they "
-            "are. Ask of each name: does a buyer choosing this instead of the seller get the same product? If "
-            "no, it does not belong here. NEVER list a company that belongs to any of "
-            "the target_industries above — such a company is a potential CUSTOMER and must never appear here. A "
-            "large diversified group that merely operates nearby (a generics major next to a cell-therapy "
-            "developer, say) is NOT a competitor unless it sells the same product category today.\n"
+            f"  competitors — 4 to 8 objects, each {{\"name\":\"...\", \"their_product\":\"...\"}}, for real "
+            f"companies in the seller's OWN product category that sell a directly substitutable "
+            f"product{' active in ' + market if market != 'Global' else ''}. \"their_product\" is a few words "
+            "stating what THIS company itself makes or sells, in its own right -- not the industry it serves, "
+            "not who buys from it. Same vertical only: a buyer chooses the seller OR this company, not both. "
+            "Name companies that sell the SAME PRODUCT TYPE stated in value_prop — if the seller makes a cell "
+            "therapy, list other cell-therapy developers, not contract manufacturers, not services firms, not "
+            "generics makers, however large or nearby they are. Before listing a name, check \"their_product\" "
+            "against value_prop yourself: if \"their_product\" is not substantially the same product type as "
+            "what the seller sells, do not include that company -- a pharmaceutical API/CDMO maker is not a "
+            "competitor to a fragrance/aromatics supplier just because both sell into pharmaceutical "
+            "manufacturing, a contract manufacturer is not a competitor to the brand it manufactures for, and a "
+            "company whose own product happens to be bought by one of the seller's buyer industries is a "
+            "potential CUSTOMER, not a rival, however similar the two industries sound. NEVER list a company "
+            "that belongs to any of the target_industries above. A large diversified group that merely operates "
+            "nearby (a generics major next to a cell-therapy developer, say) is NOT a competitor unless it "
+            "sells the same product category today.\n"
             "  industry_keywords — object mapping each target_industry to a list of 6 to 10 lowercase "
             "keywords/phrases that identify news about companies IN that buyer vertical\n"
             "  trigger_query_seeds — 10 to 14 Google-News queries that surface BUYERS (companies in the "
@@ -251,13 +258,77 @@ class Profile:
         data = llm.chat_json(system, user, max_tokens=1100, default={}) or {}
 
         industries = _as_str_list(data.get("target_industries"))[:7]
-        competitors = _as_str_list(data.get("competitors"))[:8]
+        # competitors is now a list of {"name", "their_product"} objects, not bare
+        # strings -- added 2026-10-15 so the model has to state what each named
+        # company actually sells, not just its name, which lets a deterministic check
+        # catch a category mismatch the model's own judgement missed. Confirmed real
+        # 2026-10-14: Aroma (fragrance/aromatics ingredients) had "Laurus Labs" (a
+        # pharma API/CDMO maker) in its competitor list -- the existing "NEVER list a
+        # company that belongs to a target_industry" instruction only catches a
+        # competitor whose NAME literally contains an industry word, which a real
+        # company name almost never does, so the actual category confusion (a
+        # pharma-services company, not a fragrance rival) sailed through untouched.
+        raw_competitors = data.get("competitors")
+        # Checked against target_industries (the seller's own BUYER verticals), not
+        # value_prop -- value_prop's own sentence often names those same verticals
+        # ("supplies X to personal care, cosmetics, ... and pharmaceutical
+        # manufacturers"), so a naive value_prop/their_product term overlap let every
+        # wrongly-named pharma company back in simply because "pharmaceutical" is a
+        # buyer vertical mentioned in the seller's own sentence, not because the
+        # company's actual product matched. target_industries is the clean, separate
+        # list of what the competitor must NOT belong to.
+        _stop_terms = {"india", "indian", "sells", "makes", "first", "approved", "supplies",
+                      "company", "their", "which", "through", "these", "other", "products",
+                      "product", "services", "service", "market", "global", "manufacturers",
+                      "manufacturing", "and", "in"}
+        _ind_terms_for_check = {w for i in industries
+                                for w in re.findall(r"[a-z][a-z0-9-]{3,}", i.lower())
+                                if w not in _stop_terms}
+        competitors: list[str] = []
+        if isinstance(raw_competitors, list):
+            for item in raw_competitors:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                    their_product = str(item.get("their_product") or "").strip()
+                elif isinstance(item, str):
+                    # Tolerate the old bare-string shape too (a smaller/older model may
+                    # still answer this way despite the schema) -- no their_product to
+                    # check against means this entry skips the category check below
+                    # rather than being dropped outright.
+                    name, their_product = item, ""
+                else:
+                    continue
+                if not name:
+                    continue
+                if their_product and _ind_terms_for_check:
+                    _tp_terms = {w for w in re.findall(r"[a-z][a-z0-9-]{3,}", their_product.lower())
+                                if w not in _stop_terms}
+                    if _tp_terms & _ind_terms_for_check:
+                        continue  # their_product describes a business in one of the
+                                  # seller's own BUYER verticals -- a real company,
+                                  # but a customer, not a rival; drop it here rather
+                                  # than let it reach Competition Outlook.
+                competitors.append(name)
+        else:
+            competitors = _as_str_list(raw_competitors)
+        competitors = competitors[:8]
 
         ov = _overrides_for(company)
         # The model likes to gloss names: "Intas Pharmaceuticals (CAR-T via Actis)".
         # Keep the company only, or nothing downstream can match it to an article.
         competitors = [re.sub(r"\s*[(\[][^)\]]*[)\]]", "", c).strip(" -–,") for c in competitors]
         competitors = [c for c in competitors if len(c) > 2]
+        # The model occasionally names a material/chemical/generic noun instead of an
+        # actual company ("Fluorocarbon" for a refrigerants seller) -- confirmed
+        # 2026-10-14 as one contributor (a minor one; most of the Competition Outlook
+        # relevance problem is the selection-fallback fixed in build_competition()
+        # above, not this). Tried a company-name-shape heuristic to filter these out
+        # automatically, but it also rejected real single-capitalized-word companies
+        # (Shopify, Accenture, Novartis, Pfizer, Infosys, Mailchimp all failed a
+        # "looks like a brand" check) -- a plain English word being a company's actual
+        # name is far too common for a shape-based rule to separate from a genuine
+        # material noun. Left unfiltered rather than risk silently dropping real
+        # competitors; needs a curated denylist or an LLM check if this recurs often.
         ind_kw = data.get("industry_keywords")
         industry_keywords: dict[str, list[str]] = {}
         if isinstance(ind_kw, dict):

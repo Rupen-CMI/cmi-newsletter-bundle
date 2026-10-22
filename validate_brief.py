@@ -36,13 +36,19 @@ import sys
 
 SECTIONS = ("Potential Customer", "Industry Outlook", "Competition Outlook")
 
+# 2026-10-19: report briefs are capped at 2 sections (Your Market + Competition
+# Outlook) per the cmiinsights.info redesign -- the middle slot (previously "Market
+# Moves", aliased to "Industry Outlook" below) is no longer generated at all, not
+# just occasionally thin. Demanding it would make every correctly-built report brief
+# warn for a section it was never supposed to have, the same false-failure shape the
+# "Your Market" alias below was added to fix for section 1.
+REPORT_SECTIONS = ("Potential Customer", "Competition Outlook")
+
 # A report brief replaces section 1 with "Your Market" built around the topic the lead
 # enquired about. Demanding "Potential Customer" there failed every report brief for a
 # section it is not supposed to have.
 SECTION_ALIASES = {
     "Potential Customer": ("Potential Customer", "Your Market"),
-    # Report briefs put Market Moves where a signal brief has Industry Outlook.
-    "Industry Outlook": ("Industry Outlook", "Market Moves"),
 }
 
 
@@ -144,19 +150,36 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
     # honest response -- better than the stretched picks that came out of forcing one.
     # But it must stay RARE, so losing one section is a warning and losing two is a
     # failure: at that point the brief is a single card and not worth sending.
+    #
+    # 2026-10-19: report briefs are built and rendered with only 2 sections by
+    # design (REPORT_SECTIONS) -- checking them against the signal brief's 3-section
+    # SECTIONS list would warn every correctly-built report brief for a section
+    # (the old "Market Moves" slot) that compose.py/brief_builder.py no longer
+    # generate at all, not just occasionally.
+    expected_sections = REPORT_SECTIONS if kind == "report" else SECTIONS
     missing: list[str] = []
     present = {}
-    for s in SECTIONS:
+    for s in expected_sections:
         body = ""
         for alias in SECTION_ALIASES.get(s, (s,)):
             m = re.search(rf"{re.escape(alias)}\s*·(.{{0,1500}})", text, re.S)
             if m:
                 body = m.group(1)
                 break
-        if not body and s == "Industry Outlook" and re.search(r"\bIndustry Outlook\b", text):
-            # Industry Outlook has no company flag line -- it is a themed section.
-            i = text.find("Industry Outlook")
-            body = text[i:i + 1500]
+        if not body:
+            # Story-kind sections (Industry Outlook) render their flag as just
+            # "<bullet> <label>" with no "· <subcategory>" suffix -- compose._story
+            # always sets flag="" and the template falls back to the plain label
+            # (see templates/cmi_brief.html's {% else %} branch) -- so the
+            # "label ·" pattern above never matches one. Without this fallback a
+            # perfectly complete Industry Outlook section reads as entirely
+            # missing, because the only thing distinguishing it from plain running
+            # prose is the bare label text, not a flag-line separator.
+            for alias in SECTION_ALIASES.get(s, (s,)):
+                m2 = re.search(rf"\b{re.escape(alias)}\b", text)
+                if m2:
+                    body = text[m2.end():m2.end() + 1500]
+                    break
         present[s] = bool(body and len(body.split()) > 25)
         if not present[s]:
             missing.append(s)
@@ -210,7 +233,7 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
                         # this element would be silently skipped even though it is
                         # clearly meant to be one of the two section-body kinds.
                         unrecognized_classes.append(" ".join(cls))
-            n_sections_expected = sum(1 for s in SECTIONS if present.get(s))
+            n_sections_expected = sum(1 for s in expected_sections if present.get(s))
             if main is not None and recognized < n_sections_expected:
                 fails.append(
                     f"EMAIL ERROR: {n_sections_expected} section(s) found in the "
@@ -457,12 +480,52 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
             # rather than report a verdict this logic has no actual ability to make.
             any_checkable = any(norm(c) for c in candidates if c)
 
-            if (dom_root and len(dom_root) > 2 and any_checkable
-                    and not any(_candidate_match(c) for c in candidates if c)):
-                fails.append(
-                    f"DOMAIN ERROR: brief is profiled as '{profile.company}' but the "
-                    f"recipient's email domain is '{dom}' -- these do not match by name "
-                    f"or acronym. This brief was very likely built for the wrong company.")
+            name_vs_domain_mismatch = (dom_root and len(dom_root) > 2 and any_checkable
+                                       and not any(_candidate_match(c) for c in candidates if c))
+
+            # A domain string that shares no text with the company name is NOT proof
+            # of a wrong company -- confirmed 2026-10-16 against 104 real Campaign 3
+            # DOMAIN fails: lhcommerce.com really is "Capline" (a product-line brand
+            # name, nothing to do with the registered domain), gtallp.com really is
+            # "Goldenhill", 3ds.com really is "Dassault Systemes" -- every one of these
+            # was confirmed against the company's OWN live homepage <title>, which
+            # names the profiled company outright even though the domain string does
+            # not. Boutique firms, rebrands, and product-line brands routinely run on
+            # a domain with no textual relationship to the public-facing name; that is
+            # normal, not a data error. enrich.py already fetches and caches this exact
+            # homepage text into company_intel once per domain (stage_enrich), so this
+            # is a free second opinion, not a new network call: if the profiled name's
+            # own significant words show up in that cached homepage text, the domain
+            # mismatch is explained and should NOT fail the brief. Only surface the
+            # FAIL when the mismatch is uncorroborated by the one source that would
+            # settle it -- the company's own site talking about itself.
+            if name_vs_domain_mismatch:
+                homepage_confirms = False
+                try:
+                    import db as _db
+
+                    _conn = _db.get_conn()
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT value_prop FROM company_intel WHERE domain=?", (dom,))
+                    _row = _cur.fetchone()
+                    _homepage = (_row["value_prop"] if _row else "") or ""
+                    if _homepage:
+                        _homepage_norm = re.sub(r"[^a-z0-9]", "", _homepage.lower())
+                        _name_words = [w for w in norm(profile.company or "").split()
+                                      if len(w) > 2]
+                        if _name_words and all(w in _homepage_norm for w in _name_words):
+                            homepage_confirms = True
+                except Exception:  # noqa: BLE001 -- best-effort corroboration only;
+                    pass          # a DB/lookup problem must not block on this check
+
+                if not homepage_confirms:
+                    fails.append(
+                        f"DOMAIN ERROR: brief is profiled as '{profile.company}' but the "
+                        f"recipient's email domain is '{dom}' -- these do not match by "
+                        f"name or acronym, and the company's own cached homepage text "
+                        f"does not confirm the name either. This brief was very likely "
+                        f"built for the wrong company.")
 
     # ---- RIVAL_FIRM (independent of profile) --------------------------------
     # CMI must never cite a competitor's own market-research report or a PR wire as if
@@ -529,13 +592,15 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
             f"the underlying signal pool was empty when this brief was built.")
 
     # ---- LEDE_AUTHORSHIP (independent of profile) ---------------------------
-    # The lede must open with CMI as the one doing the tracking ("CMI tracked N
-    # signals..."), never the client ("Masdar tracks...", "thyssenkrupp tracked...").
-    # compose.py now hardcodes this opening rather than leaving it to the model, but
-    # this check is the backstop for every brief generated before that fix, and for
-    # any other code path that builds a lede independently. Confirmed as a real,
-    # live defect 2026-10-12: a sent Masdar brief read "Masdar tracks three signals
-    # this week" -- the reader was made the author of their own market intelligence.
+    # The lede must never name the client as the one doing the tracking ("Masdar
+    # tracks...", "thyssenkrupp tracked..."). compose.py's fixed opening (originally
+    # "CMI tracked N signals this week.", now "This week's brief covers N signals:"
+    # as of the 2026-10-21 cmiinsights.info redesign) keeps CMI/the newsletter itself
+    # as the implicit author rather than leaving that framing to the model, but this
+    # check is the backstop for every brief generated before either fix, and for any
+    # other code path that builds a lede independently. Confirmed as a real, live
+    # defect 2026-10-12: a sent Masdar brief read "Masdar tracks three signals this
+    # week" -- the reader was made the author of their own market intelligence.
     lede_m = re.search(r"Hello,\s*[^\n<]{1,40}?\.?\s*(?:\n|$)\s*([^\n<]{10,400})", text)
     if lede_m:
         lede_text = lede_m.group(1).strip()
@@ -573,20 +638,23 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
                     "week') instead of CMI.")
 
     # ---- LEDE_DUPLICATION (independent of profile) --------------------------
-    # The hardcoded opener ("CMI tracked N signals this week.") is meant to appear
-    # exactly once. compose.editorial() asks the model to continue after it without
-    # repeating it, but that is an instruction, not a guarantee -- confirmed live
-    # 2026-10-13 via manual sample review: 9 of 30 briefs had the sentence twice
-    # (model's own lede independently opened with the same phrase it was trained on
-    # seeing). compose.py now strips a leading/trailing echo before concatenating,
-    # but this check is the backstop for every brief built before that fix and for
-    # any other path that assembles a lede independently.
-    dup_count = len(re.findall(r"CMI tracked \d+ signals? this week\.", text, re.I))
+    # The fixed opener is meant to appear exactly once per brief. Before the
+    # 2026-10-21 cmiinsights.info redesign this was "CMI tracked N signals this
+    # week."; compose.editorial() now opens with "This week's brief covers N
+    # signals:" instead, but the same risk applies -- the model is asked to write
+    # one sentence starting with that fixed phrase, not to repeat it, and that is an
+    # instruction, not a guarantee (confirmed live 2026-10-13 via manual sample
+    # review under the old opener: 9 of 30 briefs had the sentence twice, because
+    # the model's own continuation independently opened with the same phrase it was
+    # trained on seeing). Check both the current and legacy opener so this stays a
+    # backstop for briefs built under either design.
+    dup_count = (len(re.findall(r"This week.?s brief covers \w+ signals?:", text, re.I))
+                 + len(re.findall(r"CMI tracked \d+ signals? this week\.", text, re.I)))
     if dup_count >= 2:
         fails.append(
-            f"LEDE DUPLICATION ERROR: the opening sentence 'CMI tracked N signals "
-            f"this week.' appears {dup_count} times -- the model echoed the "
-            f"hardcoded opener back into its own continuation.")
+            f"LEDE DUPLICATION ERROR: the brief's fixed opening sentence appears "
+            f"{dup_count} times -- the model echoed the opener back into its own "
+            f"continuation.")
 
     # Rules above are keyword checks. They cannot tell that Reckitt is VVF's CUSTOMER
     # rather than its rival -- that needs judgement, so ask the model that wrote the

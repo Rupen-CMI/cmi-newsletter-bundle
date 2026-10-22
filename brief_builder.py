@@ -150,71 +150,6 @@ def triage_triggers(triggers: list[Article], profile):
     return rel, cands
 
 
-# ── MARKET MOVES (report briefs) — capital moving in the reader's market ───────
-def build_market_moves(pool: list[Article], profile, topic: str, log=print):
-    """One card on who is acquiring, investing, expanding or partnering in `topic`.
-
-    Section 2 of a report brief. Chosen over a regulatory or demand framing on two
-    measurements across the 20-lead sample: it finds the most usable signal (940 real
-    articles, 19/20 leads covered), and "market size / growth / forecast" queries turn
-    out to be dominated by rival research firms' SEO pages -- 44% real news against 75%
-    here. CMI must not cite a competitor's market-size page inside its own brief.
-
-    It is also the framing that sells. A rule change is information; capital moving in
-    your market is a reason to find out what is happening before you commit, which is
-    exactly what this section's existing CTA offers.
-    """
-    if not pool:
-        return None, None
-    art = pool[0]
-    log(f"    · market moves: {art.title[:52]}")
-    system = (
-        "You are a senior market analyst at Coherent Market Insights writing the "
-        "'Market Moves' section of a brief for " + profile.company +
-        " about the " + topic + ".\n\n"
-        "Report what a named company did in this market -- an acquisition, investment, "
-        "expansion, new plant, or partnership -- and what it signals about where the "
-        "market is heading. Ground every claim in the SIGNAL; invent no figures.\n\n"
-        "The SIGNAL's source may itself be a rival market-research firm's own report or "
-        "PR-wire release (e.g. MarketsandMarkets, Grand View Research, Mordor "
-        "Intelligence, Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire). If so, "
-        "report only the named company's move as news -- never present the rival "
-        "firm's market-size figures, forecasts or findings as CMI's own research.\n\n"
-        + voice.active_style()
-    )
-    user = (
-        "MARKET: " + topic + "\n"
-        "SIGNAL:\n TITLE: " + art.title + "\n"
-        " SOURCE: " + art.source + " | DATE: " + _date_label(art.published) + "\n"
-        " SUMMARY: " + art.summary[:400] + "\n\n"
-        "Return a JSON object with keys:\n"
-        "  company_name — the company making the move. Leave this EMPTY if the SIGNAL "
-        "does not actually name one; never write \"None\" or similar as a placeholder.\n"
-        "  narrative_html — 3 to 5 SHORT sentences (max 24 words each) on what they did "
-        "and what it signals for the market. Inline <b> allowed.\n"
-        "  why_it_matters — one sentence on why this move matters now\n"
-        "  what_it_signals — one phrase on the direction it points"
-    )
-    data = llm.chat_json(system, user, max_tokens=900, default={})
-    name = _clean_frag(data.get("company_name") or "") or art.source
-    return {
-        "flag": "Market Moves · " + topic.lower(),
-        "company_name": name,
-        # Carry the article through to the template. The brief names its sources in
-        # prose ("according to a Livemint report"), so without this the reader has a
-        # citation they cannot click and the brief looks unsourced.
-        "source_url": art.url,
-        "source_name": art.source,
-        "narrative_html": _clean_frag(data.get("narrative_html") or "") or art.summary or art.title,
-        "left": {"h": "Who is moving",
-                 "v": _clean_frag(data.get("why_it_matters") or "")
-                      or "Capital is moving in this market right now."},
-        "right": {"h": "What it signals",
-                  "v": _clean_frag(data.get("what_it_signals") or "")
-                       or "Consolidation and fresh capacity."},
-    }, art
-
-
 # ── 1. POTENTIAL CUSTOMER — best BUYER (never a peer/rival), free-enrich, write ─
 def build_customer(triggers: list[Article], profile, log=print):
     rel, cands = triage_triggers(triggers, profile)
@@ -422,12 +357,22 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
         return 1 if any(t in hay for t in product_terms) else 0
 
     on_cat = [(a, n) for (a, n) in combined if _on_category(a)]
-    pool = on_cat or combined
-    if on_cat:
-        log(f"    · {len(on_cat)}/{len(combined)} competitor signals are on-category")
-    else:
+    if not on_cat:
+        # Falling back to the full unfiltered pool here used to mean "no candidate
+        # mentions the seller's category -> write a card about whatever rival was
+        # most newsworthy anyway" -- confirmed 2026-10-14 as the single biggest
+        # contributor to a real, large-scale defect: a manual audit of 2188
+        # Competition Outlook sections found 55% cited a real competitor but an
+        # event with nothing to do with the seller's specific product (a rice
+        # fungicide maker "competing" with a soil/compost seller, etc). STRUCTURE's
+        # missing-section check already treats a dropped section as an acceptable,
+        # honest outcome (WARN, not FAIL) -- fabricating one that reads as real
+        # competitive intelligence is strictly worse than that, so stop doing it.
         log("    · no competitor signal mentions the seller's product category; "
-            "using the most newsworthy rival move instead")
+            "dropping Competition Outlook rather than fabricating one")
+        return None, None
+    log(f"    · {len(on_cat)}/{len(combined)} competitor signals are on-category")
+    pool = on_cat
     pool.sort(key=lambda x: x[0].composite, reverse=True)
     # The top-ranked candidate is sometimes attributed to a named rival by title/
     # summary match (_is_named_rival) while the SIGNAL itself turns out to not be a
@@ -469,11 +414,19 @@ def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> d
             f"{name} that is relevant to {profile.short}'s own market, set \"no_real_signal\": true and leave "
             "the other fields empty, instead of writing a card that says there is no real competitive "
             "news -- that card would still be sent to the reader as if it were a genuine finding.\n\n"
+            "A SIGNAL can also be about a REAL event at a REAL competitor and still not belong here, if that "
+            f"event has nothing to do with {profile.short}'s specific product. Strip every category label and "
+            "buzzword from the SIGNAL and ask: is there still a real move in the seller's own specific product "
+            "category, or does it just happen to use similar-sounding words while describing something else "
+            "entirely (a different product line, an unrelated business unit, a financial/HR move with no "
+            "product connection)? If it is the latter, that is ALSO no_real_signal -- being a genuine "
+            "competitor in general is not enough if this particular signal is not about the shared category.\n\n"
             + voice.active_style()
         )
         user = (
             f"{src}{fr}\nReturn a JSON object with keys:\n"
-            "  no_real_signal — true only if the SIGNAL above is not actually a competitive move (see system "
+            "  no_real_signal — true if the SIGNAL above is not actually a competitive move, OR is a real "
+            f"event that has nothing to do with {profile.short}'s specific product category (see system "
             "prompt); omit or false otherwise\n"
             f"  narrative_html — 3 to 5 SHORT sentences (max 24 words each): what {name} did, the figures if stated, and what it means "
             f"competitively for {profile.short}. Inline <b> allowed.\n"
@@ -661,30 +614,16 @@ def build_brief(scored: list[Article], profile, log=print, *,
     # peers (rivals surfaced in the trigger pool) feed Competition Outlook, minus the customer pick
     peer_arts = [(a, n) for (a, n) in peer_arts if cust_art is None or a.title != cust_art.title]
 
-    # Market Moves runs FIRST on report briefs so Competition Outlook can be told what
-    # it already used. The two sections both surface companies active in this market, so
-    # without the exclusion the same acquisition appears twice under different headings
-    # -- and the reader is told a company is "a move to watch" and "your competitor" in
-    # the same brief.
-    moves = moves_art = None
-    if market_topic:
-        log("  → [2] Market Moves: capital moving in the reader's market")
-        moves_pool = [a for a in (industry + competitor)
-                      if cust_art is None or a.title != cust_art.title]
-        moves, moves_art = build_market_moves(moves_pool, profile, market_topic, log=log)
+    # 2026-10-19: Market Moves is no longer generated for report briefs -- compose.py
+    # now caps report briefs at 2 sections (Your Market + Competition Outlook) per the
+    # cmiinsights.info redesign, so a Market Moves card was being written and then
+    # unconditionally discarded, wasting one full LLM call per report brief for
+    # content nothing ever rendered. Removed rather than left dead: see build_brief's
+    # old comment history if this section needs reviving.
+    log("  → [2] Competition Outlook: peers + competitor bucket → free-enrich → write")
+    competition, comp_art = build_competition(competitor, peer_arts, profile, log=log)
 
-    log("  → [3] Competition Outlook: peers + competitor bucket → free-enrich → write")
-    comp_pool = competitor
-    if moves_art is not None:
-        comp_pool = [a for a in competitor if a.title != moves_art.title]
-        peer_arts = [(a, n) for (a, n) in peer_arts if a.title != moves_art.title]
-    competition, comp_art = build_competition(comp_pool, peer_arts, profile, log=log)
-    # The same COMPANY must not hold both slots either, not just the same article.
-    if moves and competition and _base_name(moves.get("company_name")) and             _base_name(moves["company_name"]) == _base_name(competition.get("company_name")):
-        log("    · dropping Market Moves — same company as Competition Outlook")
-        moves, moves_art = None, None
-
-    used = {a.title for a in (cust_art, comp_art, moves_art) if a}
+    used = {a.title for a in (cust_art, comp_art) if a}
     industry_pool = [a for a in industry if a.title not in used]
     theme, themed = cluster.dominant_theme(industry_pool)
     if theme:
@@ -720,11 +659,9 @@ def build_brief(scored: list[Article], profile, log=print, *,
         "meta": {"date_pill": now.strftime("%A, %B ") + str(now.day) + now.strftime(", %Y"), "seller": profile.company},
         # 1. Potential Customer
         "potential_customer": customer,
-        # 2. Market Moves (report briefs only; None on signal briefs)
-        "market_moves": moves,
-        # 3. Competition Outlook
+        # 2. Competition Outlook
         "competition_outlook": competition,
-        # 3. Industry Outlook
+        # 3. Industry Outlook (signal briefs only; report briefs cap at 2 sections)
         "industry_outlook": industry_news,
         # closing — the "Inside CoherentConnect" showcase is static in the template
         "footer": {"assembled_note": "Assembled & verified by CoherentConnect", "cta_text": "Book a Demo →",
