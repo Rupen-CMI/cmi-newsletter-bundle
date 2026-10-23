@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
+import embedded_assets
+from embed_images import embed_url
+
 SERIF = "'Roboto Slab',Georgia,'Times New Roman',serif"
 SANS = "Roboto,'Segoe UI',Helvetica,Arial,sans-serif"
 
@@ -33,6 +36,31 @@ HAIR = "#E1E6EF"
 HAIR_DK = "#20365F"
 
 CMI_LOGO_URL = "https://www.coherentmarketinsights.com/images/indexv2/CMI-logo.svg"
+
+# Fixed brand/cert assets -> their pre-baked base64 PNG (see embedded_assets.py).
+# These never change per-brief, so they are embedded offline instead of fetched
+# live on every send -- avoids a slow/down image host stalling a batch send.
+_FIXED_ASSET_DATA_URIS = {
+    CMI_LOGO_URL: embedded_assets.CMI_LOGO_PNG,
+    "https://www.coherentmarketinsights.com/images/credit-img/iso-9001-updated.webp": embedded_assets.ISO_9001_PNG,
+    "https://www.coherentmarketinsights.com/images/credit-img/iso-27001-updated.webp": embedded_assets.ISO_27001_PNG,
+    "https://www.coherentmarketinsights.com/images/credit-img/esomar2026.avif": embedded_assets.ESOMAR_PNG,
+    "https://www.coherentmarketinsights.com/images/credit-img/duns-registered.webp": embedded_assets.DUNS_PNG,
+    "https://www.coherentmarketinsights.com/images/credit-img/clutupdatednew.webp": embedded_assets.CLUTCH_PNG,
+    "https://www.coherentmarketinsights.com/images/Trustpilot-27.webp": embedded_assets.TRUSTPILOT_PNG,
+}
+
+
+def _embed(src: str | None) -> str | None:
+    """Resolve an image src to a data URI: static fixed-asset lookup first
+    (no network), falling back to a live fetch+convert for anything else
+    (e.g. per-lead client logos, which vary per brief)."""
+    if not src:
+        return None
+    fixed = _FIXED_ASSET_DATA_URIS.get(src)
+    if fixed:
+        return fixed
+    return embed_url(src)
 
 
 # ------------------------------------------------------------- utilities --
@@ -91,7 +119,7 @@ def _masthead(soup) -> str:
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
     <tr>
       <td align="left" valign="top">
-        <img src="{CMI_LOGO_URL}" width="200" alt="Coherent Market Insights" style="display:block;max-width:200px;height:auto;">
+        <img src="{_embed(CMI_LOGO_URL) or CMI_LOGO_URL}" width="200" alt="Coherent Market Insights" style="display:block;max-width:200px;height:auto;">
       </td>
       <td align="right" valign="top" style="font-family:{SANS};line-height:1.6;">
         <span style="font-size:10.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:{GREEN};">{k1}</span><br>
@@ -361,7 +389,7 @@ def _caps(el) -> str:
             tds += "<tr>" + "".join(
                 f'<td width="20%" align="center" valign="middle" bgcolor="#fff" '
                 f'style="background-color:#fff;padding:8px;height:64px;">'
-                f'<img src="{img.get("src")}" alt="{img.get("alt", "")}" style="max-height:48px;max-width:100%;"></td>'
+                f'<img src="{_embed(img.get("src")) or img.get("src")}" alt="{img.get("alt", "")}" style="max-height:48px;max-width:100%;"></td>'
                 for img in row
             ) + "</tr>"
         logo_block = (
@@ -417,7 +445,7 @@ def _certs(el) -> str:
         tds += "<tr>" + "".join(
             f'<td width="33%" align="center" valign="middle" bgcolor="#fff" '
             f'style="background-color:#fff;border:1px solid {HAIR};padding:8px;height:64px;">'
-            f'<img src="{img.get("src")}" alt="{img.get("alt", "")}" style="max-height:48px;max-width:100%;"></td>'
+            f'<img src="{_embed(img.get("src")) or img.get("src")}" alt="{img.get("alt", "")}" style="max-height:48px;max-width:100%;"></td>'
             for img in row
         ) + "</tr>"
     return f"""
@@ -463,7 +491,7 @@ def _footer(soup) -> str:
 <tr><td bgcolor="{NAVY}" align="center" style="background-color:{NAVY};padding:30px 40px 34px;">
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center"><tr><td
      bgcolor="#fff" style="background-color:#fff;padding:12px 18px;border-radius:4px;">
-     <img src="{CMI_LOGO_URL}" width="160" alt="Coherent Market Insights" style="display:block;max-width:160px;height:auto;">
+     <img src="{_embed(CMI_LOGO_URL) or CMI_LOGO_URL}" width="160" alt="Coherent Market Insights" style="display:block;max-width:160px;height:auto;">
   </td></tr></table>
   <p style="margin:14px auto 18px;font-family:{SANS};font-size:12px;line-height:1.6;color:#B9C4DA;max-width:340px;">{desc}</p>
   <p style="margin:0 0 16px;font-family:{SANS};font-size:10.5px;letter-spacing:.14em;

@@ -44,9 +44,14 @@ SECTIONS = ("Potential Customer", "Industry Outlook", "Competition Outlook")
 # "Your Market" alias below was added to fix for section 1.
 REPORT_SECTIONS = ("Potential Customer", "Competition Outlook")
 
-# A report brief replaces section 1 with "Your Market" built around the topic the lead
-# enquired about. Demanding "Potential Customer" there failed every report brief for a
-# section it is not supposed to have.
+# A report brief replaces section 1 with a market topic card, built around the topic
+# the lead enquired about. Demanding "Potential Customer" there failed every report
+# brief for a section it is not supposed to have. "Your Market" was the fixed label
+# compose.py rendered for this section before the 2026-10-22 fix; it's kept here only
+# as a fallback for briefs built before that fix -- the STRUCTURE check's own
+# report-brief section-1 handling now finds it structurally (first "prospect"-kind
+# div) rather than relying on fixed label text, since the label is the dynamic topic
+# name per brief and has no fixed string to alias anymore.
 SECTION_ALIASES = {
     "Potential Customer": ("Potential Customer", "Your Market"),
 }
@@ -161,11 +166,33 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
     present = {}
     for s in expected_sections:
         body = ""
-        for alias in SECTION_ALIASES.get(s, (s,)):
-            m = re.search(rf"{re.escape(alias)}\s*·(.{{0,1500}})", text, re.S)
-            if m:
-                body = m.group(1)
-                break
+        # 2026-10-22: a report brief's section 1 pill/flag is the bare market-topic
+        # name (e.g. "Wireless Access Point Market"), not the fixed "Your Market"
+        # string -- confirmed against the Fortinet industry-brief sample, which has
+        # neither "Your Market" nor "Potential Customer" anywhere. There is no fixed
+        # alias text left to search for, since the topic differs per brief. A report
+        # brief has exactly two "prospect"-kind sections (no "story"-kind section at
+        # all, per REPORT_SECTIONS/compose.py), so for "Potential Customer" in a
+        # report brief, take the body of the FIRST <div class="prospect"> block
+        # structurally -- the one before "Competition Outlook" -- rather than
+        # matching on any particular label text.
+        if kind == "report" and s == "Potential Customer":
+            comp_idx = text.find("Competition Outlook")
+            first_prospect_m = re.search(r'<div class="prospect">(.*?)</div>\s*</div>',
+                                         html, re.S)
+            if first_prospect_m:
+                candidate = re.sub(r"<[^>]+>", " ", first_prospect_m.group(1))
+                # Guard against the body match actually belonging to Competition
+                # Outlook (e.g. if a future redesign reorders sections) by checking
+                # it does not itself contain that label.
+                if "Competition Outlook" not in candidate:
+                    body = candidate
+        if not body:
+            for alias in SECTION_ALIASES.get(s, (s,)):
+                m = re.search(rf"{re.escape(alias)}\s*·(.{{0,1500}})", text, re.S)
+                if m:
+                    body = m.group(1)
+                    break
         if not body:
             # Story-kind sections (Industry Outlook) render their flag as just
             # "<bullet> <label>" with no "· <subcategory>" suffix -- compose._story
@@ -252,9 +279,15 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
 
     # ---- ROLES -------------------------------------------------------------
     cust = section_company(text, "Potential Customer")
-    if not cust and re.search(r"Your Market\s*·", text):
-        cust = ""   # report brief: section 1 is a market, so the buyer role checks below
-                    # have nothing to judge and must not fire
+    if not cust and kind == "report":
+        # A report brief's section 1 is a market topic (e.g. "Wireless Access Point
+        # Market"), not a company -- the buyer-role checks below ("is this a known
+        # competitor") have nothing to judge there and must not fire. Previously
+        # detected via the fixed "Your Market ·" string that rendered in the HTML;
+        # as of the 2026-10-22 fix that string is no longer rendered at all (section
+        # 1's pill/flag is the bare topic name), so gate on `kind` directly instead
+        # -- more robust than matching rendered text that can vary per brief anyway.
+        cust = ""
     comp = section_company(text, "Competition Outlook")
 
     for rival in (profile.competitors or []):

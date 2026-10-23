@@ -182,6 +182,17 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
             p["body_html"] = re.sub(rf"\b{re.escape(bit)}\b", "the client", p["body_html"], flags=re.I)
         if not p["title"]:
             p["title"] = f"{industry} {_DIMENSIONS[i % len(_DIMENSIONS)]} study"
+        # "2 sentences" in the prompt above is an instruction, not a guarantee -- the
+        # model has been seen writing 3-4, which on the fixed-size capcard grid just
+        # means more wrapped lines, not a bigger card -- confirmed 2026-10-22 against
+        # the Fortinet sample (the cmiinsights.info redesign's actual reference,
+        # 2 sentences per card) vs. a live Waters brief running noticeably longer.
+        # Keep only the first 2 sentences deterministically rather than trust the
+        # instruction alone, matching every other prompt-following gap this file
+        # already hard-guards (seller-name leak above, the lede opener, etc.).
+        sentences = re.findall(r"[^.!?]+[.!?]+(?:</b>)?|[^.!?]+$", p["body_html"])
+        if len(sentences) > 2:
+            p["body_html"] = "".join(sentences[:2]).strip()
     while len(projects) < 4:                       # never render an empty card
         projects.append(projects[len(projects) % max(1, len(projects))] if projects
                         else {"title": f"{industry} supplier and demand study",
@@ -298,14 +309,20 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
     # existing mechanism to flag a brief that is now too thin.
     if kind == "report" and market_topic and news.get("body_html"):
         log("    · section 1: your market")
+        # 2026-10-22: the cmiinsights.info redesign's section-1 pill/flag reads the
+        # bare topic name ("Wireless Access Point Market"), not a generic "Your
+        # Market"/"Your Market · topic" wrapper -- confirmed against the Fortinet
+        # industry-brief sample, which has neither string anywhere. "Your Market"
+        # is kept ONLY as validate_brief.py's SECTION_ALIASES lookup key (the
+        # STRUCTURE check's own section-1 identity), never rendered into the HTML.
         sections.append(_prospect(
-            "Your Market",
+            market_topic,
             {"body_html": news.get("body_html", ""),
              "source_url": news.get("source_url", ""),
              "source_name": news.get("source_name", ""),
              "cells": [{"h": "What is changing", "v": _clean(news.get("headline", ""))}]},
             ("What is changing", "Why it matters for you"),
-            flag=f"Your Market · {market_topic.lower()}", title=market_topic))
+            flag=market_topic, title=market_topic))
     elif kind == "report" and cust:
         # Fall back to a real Potential Customer card rather than drop the section
         # outright, if generation happened to find one.
