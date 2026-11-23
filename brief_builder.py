@@ -115,23 +115,34 @@ def triage_triggers(triggers: list[Article], profile):
     cands = triggers[:10]
     if not cands:
         return {}, cands
+    # Prompt = triage-lab variant E_balanced (session_scratch/triage_lab.py): best of five
+    # variants scored on the 97 stored triage prompts (326 labelled signals) -- 83.4% vs
+    # 82.5% for the old wording. The old "if unsure choose other" tail was strictly worse
+    # (79.8%), and a two-yes/no-question decomposition collapsed to 57.1%.
     system = (
-        f"You are a B2B sales analyst for {profile.company} ({profile.short}), which sells {profile.value_prop} "
-        f"Its CUSTOMERS are companies in these buyer industries: {', '.join(profile.industries)}. "
-        "For each news signal, classify the company's relationship to the seller:\n"
-        "  'buyer' = a company that would BUY the seller's product (a customer in the buyer industries with a "
-        "need the product solves)\n"
-        "  'peer'  = a company that SELLS a similar/competing product — a RIVAL in the seller's own space "
-        "(even if well-funded). A rival's funding/launch is competition, NOT a customer.\n"
-        "  'other' = neither.\n"
-        "Be strict: if the company does what the seller does, it is 'peer', never 'buyer'.\n"
-        "Be equally strict the other way: 'buyer' requires a company whose OWN business "
-        "sits in one of the buyer industries listed above and that would plausibly place "
-        "a purchase order for what the seller makes. A large, famous company in an "
-        "unrelated trade is 'other', not 'buyer' -- a watchmaker does not buy "
-        "oleochemicals, a fashion label does not buy ayurvedic bulk actives. If no "
-        "candidate is a genuine buyer, mark them all 'other' rather than stretching for "
-        "the biggest name."
+        "You are a B2B sales analyst. For each news item you decide which company the item is about and how "
+        "that company relates to the SELLER.\n\n"
+        f"SELLER: {profile.company} ({profile.short}). It sells: {profile.value_prop}\n"
+        f"THE SELLER'S BUYER INDUSTRIES: {', '.join(profile.industries)}.\n\n"
+        "STEP 1 - WHO IS THE ITEM ABOUT?\n"
+        "Name the one company the item is mainly about. The publisher is never the subject (Inc42, Reuters, "
+        "Economic Times, Business Standard are outlets, not companies in the story). If the item is a roundup, "
+        "tracker, list, opinion piece, market report or event with no single company as its subject, there is no "
+        "company: leave company_name empty and the relationship is 'other'.\n\n"
+        "STEP 2 - LABEL THAT COMPANY (check in this order):\n"
+        "1. 'peer' - the company SELLS the same kind of product or service as the seller, to the same kind of "
+        "buyer. Any company on the Known competitors list is a peer. A peer is never a buyer, however large or "
+        "newsworthy; its funding round or launch is competition.\n"
+        "2. 'buyer' - the company's OWN business sits in one of the buyer industries AND the news shows a "
+        "reason it would plausibly buy what the seller sells (expansion, a new plant or office, hiring, "
+        "funding, a launch, a problem the product solves). Being large or famous is not enough: a company in an "
+        "unrelated trade is not a buyer.\n"
+        "3. 'other' - everything else: regulators, ministries and courts; industry bodies and associations; "
+        "universities and research institutes; media, consultancies and analyst firms; investors; the seller's "
+        "own suppliers; companies in unrelated trades; and items with no clear company.\n\n"
+        "Decide on the evidence in the item. Do not default to 'other': if the company clearly sells what the "
+        "seller sells, it is a 'peer'; if its own business is in a buyer industry and the news shows a need, it is "
+        "a 'buyer'. Use 'other' only when neither is true."
     )
     user = (f"SELLER sells: {profile.value_prop}\nKnown competitors: {', '.join(profile.competitors) or '—'}\n\n"
             f"SIGNALS:\n{_cands_block(cands)}\n\n"
@@ -628,12 +639,27 @@ def build_brief(scored: list[Article], profile, log=print, *,
     theme, themed = cluster.dominant_theme(industry_pool)
     if theme:
         log(f"  → [3] Industry Outlook: TF-IDF theme = '{theme}' ({len(themed)} signals)")
+    # Report briefs promise a specific market, and that card ("Your Market") is written
+    # from this pool. The TF-IDF theme above is the biggest cluster of the SELLER's own
+    # industry-query stories, which are rarely about the enquired market (measured: 0-1%
+    # of the eligible pool mentioned the topic; a "Space Ground Station" brief was
+    # written from UK banking cyber-loss news). So when a topic was given, rank articles
+    # that are actually about it first -- from any bucket except competitor -- and only
+    # fall back to the theme when nothing on-topic exists.
+    topical: list[Article] = []
+    if market_topic:
+        import score as _score
+        topical = sorted(
+            (a for a in scored if a.title not in used and a.bucket != "competitor"
+             and getattr(a, "topic_rel", 0.0) >= _score.TOPICAL),
+            key=lambda a: (-a.topic_rel, -a.composite))
+        log(f"  → [3] Your Market: {len(topical)} on-topic signals for '{market_topic}'")
     # One industry signal only: the strongest of the dominant theme. More than one
     # dilutes the section and repeats the same analyst read. triage (rank by fit) and
     # synthesize (write prose for the #1 pick) are one combined call -- see
     # triage_and_synthesize_industry's docstring for why.
     log("  → [3] Industry Outlook: triage + synthesize news")
-    industry_news = triage_and_synthesize_industry(themed or industry_pool, profile,
+    industry_news = triage_and_synthesize_industry(topical or themed or industry_pool, profile,
                                                     market_topic=market_topic)
 
     # NOTE: this used to also call build_editorial() here to produce a lede, three

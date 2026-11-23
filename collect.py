@@ -34,6 +34,9 @@ class Article:
     composite: float = 0.0
     trigger_type: str = ""
     matched_industries: list = field(default_factory=list)
+    # How directly this article is about the enquired market topic (report briefs only);
+    # set by score.score_all(topic=...). 0.0 when no topic was given.
+    topic_rel: float = 0.0
 
 
 def _fingerprint(title: str, url: str) -> str:
@@ -208,6 +211,148 @@ def collect(profile, country: dict | None = None) -> list[Article]:
     # _collapse_near_duplicates) -- exact-fingerprint dedup only catches identical
     # title+url pairs, which republished wire stories rarely are.
     return _collapse_near_duplicates(list(seen.values()))
+
+
+# ── Topic collection (report briefs) ─────────────────────────────────────────
+# Words that describe the REPORT, not the subject. Leaving "market" in a query is the
+# single worst thing to do for a news search: it pulls in rival research firms' own
+# "X Market Size, CAGR" press releases (which eligible() must then drop by policy) and
+# crowds out actual reporting. Stripped from the search string; the topic itself stays.
+_TOPIC_NOISE = {"market", "markets", "global", "report", "analysis", "size", "share", "forecast",
+                "tracker", "pricing", "database", "ad-hoc", "adhoc", "study", "outlook", "trends",
+                "overview", "insights", "regional", "strategy", "partnership"}
+
+
+def topic_subject(topic: str) -> str:
+    """'Global Mesoporous Silica Market' -> 'Mesoporous Silica'. Falls back to the raw
+    topic if stripping would leave nothing."""
+    words = [w for w in re.split(r"[\s\-–—:|/]+", topic or "") if w]
+    kept = [w for w in words if w.lower().strip(".,") not in _TOPIC_NOISE]
+    return " ".join(kept).strip() or (topic or "").strip()
+
+
+def _bing_title_split(title: str) -> tuple[str, str]:
+    """Bing's RSS title is sometimes 'Headline | Publisher'."""
+    if " | " in title:
+        head, pub = title.rsplit(" | ", 1)
+        if 0 < len(pub) <= 40:
+            return head.strip(), pub.strip()
+    return title.strip(), ""
+
+
+def _fetch_bing(query: str, bucket: str, cutoff: datetime) -> list[Article]:
+    """Bing News RSS: a second free engine. Unlike Google News RSS (whose 'summary' is
+    the headline again, 99% of the time), Bing returns the article's opening lines, and
+    its links carry the publisher's real URL in a `url=` parameter."""
+    from urllib.parse import parse_qs, urlparse
+
+    url = config.BING_NEWS.format(q=quote_plus(query))
+    out: list[Article] = []
+    try:
+        feed = feedparser.parse(url, request_headers={"User-Agent": config.HTTP_UA})
+    except Exception:  # noqa: BLE001
+        return out
+    for e in feed.entries:
+        dt = _parse_dt(e)
+        if dt is None or dt < cutoff:
+            continue
+        raw_title = _clean(getattr(e, "title", ""))
+        title, pub = _bing_title_split(raw_title)
+        link = getattr(e, "link", "")
+        real = parse_qs(urlparse(link).query).get("url", [""])[0]
+        link = real or link
+        if not title or not link:
+            continue
+        src = getattr(e, "news_source", "") or pub or "Bing News"
+        out.append(Article(title=title, url=link, source=str(src), published=dt,
+                          summary=_clean(getattr(e, "summary", ""))[:600], query=query,
+                          bucket=bucket, fingerprint=_fingerprint(title, link)))
+    return out
+
+
+def topic_queries(topic: str) -> list[str]:
+    """Search strings about the SUBJECT of a market, worded the way reporters write."""
+    s = topic_subject(topic)
+    return [s, f"{s} industry", f"{s} manufacturers", f"{s} demand supply",
+            f"{s} expansion investment", f"{s} regulation policy"]
+
+
+def anchored_topic_queries(topic: str, country: dict | None) -> list[str]:
+    """Country-anchored variants of topic_queries(topic): every topic query with
+    the country's name appended ("stem cells Morocco") plus demonym forms for the
+    first two ("Indian autonomous vessels"), fetched with the country's Google
+    News locale.
+
+    Why: the 2026-11 live run showed REPORT briefs leaking through no-geo
+    'industry'/topic articles — "HD Hyundai and Anduril launch autonomous vessel"
+    reached an India lead because the bare "autonomous vessels" query found it and
+    no country word appeared in the text. With an anchored query in the pool, the
+    article's `query` field carries the country anchor and geo.filter_for_lead's
+    tightened no-geo rule can tell anchored results from un-anchored ones.
+    """
+    cname = ((country or {}).get("name") or "").strip()
+    if not cname or cname == "Global":
+        return []
+    qs = topic_queries(topic)
+    out = [f"{q} {cname}" for q in qs]
+    demonym = ((country or {}).get("nationality") or "").strip().lower()
+    if demonym:
+        out += [f"{q} {demonym}" for q in qs[:2]]
+    return out
+
+
+def collect_topic(topic: str, country: dict | None = None) -> list[Article]:
+    """News ABOUT the market a report lead enquired about.
+
+    Why this exists: the old path called collect_queries() with
+    ["<topic> Market", "<x> market growth", "<x> companies", "<x> industry India"], which
+    (a) inherited collect_queries' 96-hour cutoff -- the company queries get six months --
+    so niche topics returned 0-6 articles; (b) put the word "market" in every query,
+    which draws rival research firms' own report PR; and (c) hard-coded 'India'.
+    Measured on 8 real Campaign 6 topics: 0-6 on-topic articles before, 5-62 after.
+
+    Google News (country locale) plus Bing News (snippets). Results stay in the
+    'industry' bucket; research-firm PR is still excluded later by score.eligible().
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.TOPIC_LOOKBACK_HOURS)
+    locale = (country or config.COUNTRIES["Global"]).get("gn", config.GN_DEFAULT_LOCALE)
+    qs = topic_queries(topic)
+    aq = anchored_topic_queries(topic, country)
+    articles: list[Article] = []
+    with cf.ThreadPoolExecutor(max_workers=8) as ex:
+        futs = [ex.submit(_fetch_one, q, "industry", cutoff, locale) for q in qs + aq]
+        futs += [ex.submit(_fetch_bing, q, "industry", cutoff) for q in qs[:4]]
+        for fut in cf.as_completed(futs):
+            try:
+                articles.extend(fut.result())
+            except Exception:  # noqa: BLE001
+                pass
+    # Same story from both engines / both query forms: keep the copy that carries
+    # real text, and on a tie prefer the country-ANCHORED copy — its `query` field
+    # then names the country, which is exactly the evidence geo.filter_for_lead's
+    # no-geo rule looks for.
+    _anchor_toks = [t for t in (((country or {}).get("name") or "").lower().strip(),
+                                ((country or {}).get("nationality") or "").lower().strip()) if t]
+
+    def _anchored(a: Article) -> bool:
+        ql = (a.query or "").lower()
+        return any(t in ql for t in _anchor_toks)
+
+    best: dict[str, Article] = {}
+    for a in articles:
+        key = _story_key(a.title)
+        if not key:
+            continue
+        cur = best.get(key)
+        if cur is None or (_anchored(a) and not _anchored(cur)):
+            best[key] = a
+        elif not _anchored(a) and _anchored(cur):
+            continue
+        elif len(a.summary) > len(cur.summary) + 40:
+            best[key] = a
+    out = list(best.values())
+    out.sort(key=lambda x: x.published, reverse=True)
+    return out
 
 
 def collect_queries(queries: list[str], country: dict | None = None, bucket: str = "market") -> list[Article]:

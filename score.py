@@ -30,12 +30,24 @@ def _is_ticker_noise(a: Article) -> bool:
     return bool(_TICKER_NOISE.search(f"{a.title} {a.summary}"))
 
 
+# Paid "Top 10 <X> Manufacturers in 2026" listicles syndicated through local-newspaper
+# sites, and video/social posts, are not reporting and make poor evidence.
+_SEO_LISTICLE = re.compile(
+    r"\b(top\s+\d+|\d+|five|ten|seven|three)\s+(reputable|leading|best|top|trusted|premier\s+)?"
+    r"[\w\- ]{0,40}?\b(manufacturers?|suppliers?|producers?|companies|brands)\b.{0,30}\b(in|for)\s+(\w+\s+){0,2}20\d\d\b"
+    r"|\b(reputable|premium|leading)\b.{0,40}\bmanufacturers?\b.{0,25}\b(in|of)\s+(china|india)\b",
+    re.I)
+_LOW_VALUE_SOURCES = ("youtube", "facebook", "reddit", "pinterest", "tiktok", "instagram", "quora")
+
+
 def is_unsafe_to_cite(a: Article) -> bool:
     """Ticker noise or a rival research firm's own report PR -- never safe to show a
     reader regardless of composite score, unlike an ordinary low-relevancy article.
     Exposed so a caller falling back to the unfiltered pool (pipeline.stage_generate's
     `keep or scored`, for a thin-coverage lead) can still exclude these two."""
-    return _is_ticker_noise(a) or config.is_research_pr(a.source, a.title)
+    src = (a.source or "").lower()
+    return (_is_ticker_noise(a) or config.is_research_pr(a.source, a.title)
+            or bool(_SEO_LISTICLE.search(a.title or "")) or any(w in src for w in _LOW_VALUE_SOURCES))
 
 
 def _text(a: Article) -> str:
@@ -105,11 +117,40 @@ def freshness(a: Article) -> float:
 
 
 # ── 3. IMPORTANCE — strength of the trigger event (+ money-scale boost) ──────
+def _kw_regex(kw: str) -> "re.Pattern":
+    """Whole-word match (plus plain suffixes). The old test was `kw in text`, so the
+    European Medicines Agency keyword "ema" matched inside "d-ema-nd": 350 of its 351
+    hits in 12,862 real articles were accidents, each one scored as a regulatory
+    approval (importance 0.85). That alone floated "...Demand Drive Growth" press
+    releases to the top of unrelated leads' signal lists."""
+    pre = r"(?<![a-z0-9])"
+    post = r"(?:s|es|ed|d)?(?![a-z0-9])" if kw[-1].isalnum() else ""
+    return re.compile(pre + re.escape(kw) + post)
+
+
+_TRIG_RE = {t: [_kw_regex(k) for k in spec["keywords"]] for t, spec in _TRIG.items()}
+
+
+# "raises" / "raised" / "backed by" / "led by" only mean FUNDING when money is in the
+# sentence. "Bank of England raises rates" and "Sequoia closes London office" are not
+# buying triggers, yet scored 0.95 because the bare verb matched.
+_WEAK_FUNDING = {"raises", "raised", "backed by", "led by", "closes $", "secures $"}
+_MONEY = re.compile(r"[$€£₹]|\d[\d.,]*\s?(?:million|billion|bn|crore|lakh|m|k)|series [a-f]|"
+                    r"seed|funding|financing|valuation|funding round|venture")
+
+
+def _type_matches(ttype: str, spec: dict, t: str) -> bool:
+    hits = [kw for kw, rx in zip(spec["keywords"], _TRIG_RE[ttype]) if rx.search(t)]
+    if ttype == "funding_round" and hits and all(h in _WEAK_FUNDING for h in hits):
+        return bool(_MONEY.search(t))
+    return bool(hits)
+
+
 def importance(a: Article) -> tuple[float, str]:
     t = _text(a)
     best_type, best_imp = "", 0.0
     for ttype, spec in _TRIG.items():
-        if any(kw in t for kw in spec["keywords"]):
+        if _type_matches(ttype, spec, t):
             if spec["importance"] > best_imp:
                 best_imp, best_type = spec["importance"], ttype
     if not best_type:
@@ -121,9 +162,65 @@ def importance(a: Article) -> tuple[float, str]:
     return round(best_imp, 3), best_type
 
 
+# ── 4. TOPIC RELEVANCE — is it about the market the lead enquired about? ─────
+# Report briefs are promised a specific market ("Stem Cells Market"). Nothing above
+# measures that: relevancy() scores against the seller's industry lexicon, and the
+# bucket floors make every query hit "relevant". Measured on real Campaign 6 leads, 0-1%
+# of the eligible pool mentioned the topic at all.
+_TOPIC_STOP = {"market", "markets", "global", "industry", "report", "analysis", "size", "share",
+               "forecast", "tracker", "pricing", "price", "database", "strategy", "partnership",
+               "regional", "hoc", "adhoc", "india", "study", "outlook", "trends", "trend",
+               "overview", "research", "insights", "sector", "the", "and", "for", "with", "from",
+               # generic nouns that match almost any industrial headline
+               "manufacturing", "manufacturer", "associated", "equipment", "service", "services",
+               "product", "products", "system", "systems", "technology", "technologies", "solution",
+               "solutions", "company", "companies", "business", "application", "applications"}
+
+
+def _stem(w: str) -> str:
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("s") and len(w) > 3 and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def topic_tokens(topic: str) -> list[str]:
+    seen: list[str] = []
+    for w in re.findall(r"[a-z0-9]+", (topic or "").lower()):
+        if w in _TOPIC_STOP or len(w) < 3:
+            continue
+        s = _stem(w)
+        if s not in seen:
+            seen.append(s)
+    return seen
+
+
+def topic_relevance(a: Article, tokens: list[str]) -> float:
+    """0..1. A topic word in the headline counts fully, in the summary only half; an
+    exact adjacent-words phrase in the headline adds 0.2. >=0.6 means 'about it'."""
+    if not tokens:
+        return 0.0
+    tw = {_stem(w) for w in re.findall(r"[a-z0-9]+", (a.title or "").lower())}
+    sw = {_stem(w) for w in re.findall(r"[a-z0-9]+", (a.summary or "").lower())} - tw
+    hits = sum(1.0 for t in tokens if t in tw) + sum(0.5 for t in tokens if t in sw)
+    rel = min(1.0, hits / len(tokens))
+    if len(tokens) >= 2 and " ".join(tokens) in " ".join(_stem(w) for w in re.findall(r"[a-z0-9]+", (a.title or "").lower())):
+        rel = min(1.0, rel + 0.2)
+    return round(rel, 3)
+
+
+TOPICAL = 0.6     # topic_rel at or above this counts as being about the topic
+
+
 # ── Composite ────────────────────────────────────────────────────────────────
-def score_all(articles: list[Article], profile) -> list[Article]:
+def score_all(articles: list[Article], profile, topic: str = "") -> list[Article]:
+    """`topic` (report briefs) only ANNOTATES each article with topic_rel; it never
+    changes composite or eligibility, so every other section behaves exactly as before.
+    brief_builder uses topic_rel to choose the 'Your Market' evidence."""
+    toks = topic_tokens(topic)
     for a in articles:
+        a.topic_rel = topic_relevance(a, toks) if toks else 0.0
         rel, inds = relevancy(a, profile.industry_keywords)
         # Bucket-based relevancy floor: a trigger/industry article already matched a
         # seller-SCOPED query, so it is topically relevant even if the keyword lexicon

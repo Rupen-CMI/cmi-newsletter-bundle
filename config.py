@@ -80,6 +80,10 @@ BIG_MONEY_HINTS = ["billion", "$1b", "$2b", "$500m", "$400m", "$300m", "$250m", 
 # Locale-parameterized so each target country pulls its own Google-News edition.
 GOOGLE_NEWS = "https://news.google.com/rss/search?q={q}&hl={hl}&gl={gl}&ceid={ceid}"
 GN_DEFAULT_LOCALE = ("en-US", "US", "US:en")
+# Second free engine. Its RSS returns the article's opening lines as the summary (Google
+# News RSS returns the headline again) and a publisher URL inside the `url=` parameter.
+BING_NEWS = "https://www.bing.com/news/search?q={q}&format=rss&setlang=en-US"
+HTTP_UA = "Mozilla/5.0 (compatible; CoherentConnect-Newsletter/1.0)"
 LOOKBACK_HOURS = 96  # signals older than this are dropped
 
 # Competitor signals get a much longer window than triggers. The two are not the same
@@ -103,6 +107,10 @@ COMPETITOR_LOOKBACK_HOURS = 24 * 182
 # beats an irrelevant fresh one. A per-company `trigger_lookback_hours` in
 # company_overrides.json overrides this.
 TRIGGER_LOOKBACK_HOURS = 24 * 182
+
+# Topic news (report briefs) uses the same six months. collect_queries() used LOOKBACK_HOURS
+# (96h) for these, which left niche topics with nothing -- see collect.collect_topic().
+TOPIC_LOOKBACK_HOURS = 24 * 182
 
 # ── Target countries (compact port of the mother repo's config_countries/) ──
 # Each: Google-News locale (hl, gl, ceid) + geo-match signals used to HARD-FILTER
@@ -191,6 +199,7 @@ RESEARCH_FIRM_SOURCES = [
     "einpresswire", "ein presswire", "digital journal", "benzinga", "yahoo finance market",
     "kenneth research", "zion market", "acumen research", "credence research", "prophecy market",
     "sns insider", "towards healthcare", "biospace market",
+    "indexbox", "index box",      # "<X> Market To 2035: <driver> Drives Growth - News and Statistics"
 ]
 
 # Report-PR headline patterns (a competitor's report title, not a real news event).
@@ -198,7 +207,10 @@ import re as _re
 _REPORT_PR_RE = _re.compile(
     r"market\s+(size|share|report|forecast|analysis|outlook|trends?|research|revenue|growth\s+analysis)"
     r"|\bcagr\b|forecast\s+(to|till|until|period|by)\s*,?\s*20\d\d|to\s+reach\s+(usd|us\$|\$|inr)"
-    r"|\|\s*(report|forecast|industry|20\d\d)|\bmn\b.*\b20\d\d\b|\(7mm\)|worth\s+(usd|us\$|\$)",
+    r"|\|\s*(report|forecast|industry|20\d\d)|\bmn\b.*\b20\d\d\b|\(7mm\)|worth\s+(usd|us\$|\$)"
+    # "<X> Market To 2035: <driver> Drives Growth" and "Market Projected/Expected to ..."
+    r"|\bmarkets?\s+to\s+20\d\d\b|\bmarkets?\s+(is\s+)?(projected|expected|set|forecast(ed)?|poised)\s+to\b"
+    r"|\bto\s+(hit|touch|surpass|exceed)\s+(usd|us\$|\$|inr)|\bmarkets?\b.{0,80}\bby\s+20[2-5]\d\b",
     _re.I,
 )
 
