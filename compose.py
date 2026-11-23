@@ -46,7 +46,20 @@ def _clean(s: str) -> str:
     s = re.sub(r"\s*[—–]\s*", ", ", s)                  # em dash -> comma
     s = re.sub(r",\s*,", ",", s)
     s = re.sub(r"\s+([.,;:])", r"\1", s)
-    return re.sub(r"\s{2,}", " ", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    # The model sometimes emits a stray trailing </b> with no matching opener --
+    # seen at scale in Campaign 5 analyst bullets (2026-10-27): it bolds the lead
+    # clause correctly, then closes a SECOND, nonexistent <b> at the very end of
+    # the plain-sentence tail. HTML renders a lone </b> harmlessly, but it is
+    # still wrong/sloppy, so balance here rather than leave it in the output.
+    opens, closes = s.count("<b>"), s.count("</b>")
+    if closes > opens:
+        for _ in range(closes - opens):
+            idx = s.rfind("</b>")
+            s = s[:idx] + s[idx + 4:]
+    elif opens > closes:
+        s += "</b>" * (opens - closes)
+    return s
 
 
 def _social(profile, include_logos: bool, include_quotes: bool) -> dict:
@@ -219,6 +232,22 @@ def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
     # per-signal clauses are genuinely new prose each time, so they can't be a fixed
     # string -- the model writes the whole sentence, just told exactly how many
     # clauses and what each clause's fixed label text must be.
+    #
+    # 2026-10-29: confirmed by the user that naming the specific entity in the lede
+    # (e.g. "a potential customer Candid Health raises $120 million...", "Apple is
+    # expanding its retail...", "No7 launched six new skincare products...") is
+    # WRONG -- it gives the reader everything they need from the subject line
+    # alone and they never read the rest of the brief. The lede clause may add
+    # generic/thematic color (geography, sector, theme -- "in North America", "on
+    # lab animal rules", "with a disclosed IPO deviation") but must NEVER use the
+    # entity's own proper name (company, product, publication, person). The named
+    # specifics belong only in the numbered cards below. Pass the actual names
+    # explicitly so the model knows exactly what string(s) it must avoid.
+    # Each section's own "title" already holds the entity's real proper name
+    # (company name for a _prospect card, headline for a _story card) -- that is
+    # exactly the string the lede must never contain.
+    names_to_avoid = sorted({s["title"].strip() for s in sections
+                             if s.get("title") and s["title"] != "—"})
     clause_spec = "; ".join(f'clause {i+1} about the {s["label"].lower()}'
                              for i, s in enumerate(sections))
     user = (f"CLIENT: {profile.company} ({profile.short}) — {profile.value_prop}\n"
@@ -230,9 +259,16 @@ def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
             f"signal{'s' if n != 1 else ''}: " + clause_spec + ", each clause a "
             "short bolded label phrase in <b></b> (the section's own subject, e.g. "
             "\"a <b>potential customer</b>\" or \"the <b>industry outlook</b>\" or "
-            "\"a <b>competitor move</b>\") followed by a few words naming the "
-            "specific signal, joined with commas and \"and\" before the last clause. "
-            "Do not add any sentence after this one. "
+            "\"a <b>competitor move</b>\") optionally followed by a FEW GENERIC "
+            "words of color -- geography, sector, or theme only (e.g. \"in North "
+            "America\", \"on lab animal rules\", \"with a disclosed IPO "
+            "deviation\"). "
+            "Do NOT name the specific company, product, person, or publication "
+            "anywhere in the lede"
+            + (f" -- never write any of: {', '.join(names_to_avoid)}" if names_to_avoid else "")
+            + ". Those names appear only in the numbered cards below this lede, "
+            "never here. Join clauses with commas and \"and\" before the last "
+            "clause. Do not add any sentence after this one. "
             "Each top3 line is a bolded claim in <b></b> then one plain "
             "sentence on why it matters. Same order as SECTIONS.")
     data = llm.chat_json(system, user, max_tokens=1000, default={}) or {}
@@ -241,8 +277,31 @@ def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
     # hardcoded-opener design too) -- if it's missing, prepend it so the lede never
     # starts cold with a bare clause list.
     fixed_opening = f"This week's brief covers {count_word} signal{'s' if n != 1 else ''}:"
-    if not re.match(r"^\s*this week.?s brief covers", lede, flags=re.I):
-        lede = f"{fixed_opening} {lede}".strip() if lede else f"{fixed_opening.rstrip(':')}."
+    # Guard against the model echoing the opener BACK into its own continuation --
+    # seen at scale in Campaign 5 (583/1000 signal briefs, 2026-10-27, and again
+    # 276/300 FAIL briefs in the 2026-10-28 batch2 run after a first fix attempt
+    # that only handled the double-occurrence case). The model sometimes puts the
+    # echo in <b></b> as clause 1 WITHOUT a clean plain-text opener before it (e.g.
+    # "A <b>This week's brief covers two signals:</b> potential customer..." -- only
+    # ONE regex match, inside the bold span, not at the start) -- counting
+    # occurrences and only acting when there are 2+ missed this shape entirely, and
+    # the "opener missing, prepend it" guard below then added a SECOND, genuinely
+    # duplicate opener on top. Simplest robust fix: strip every occurrence of the
+    # opener text wherever it appears (bolded or not, anywhere in the string), then
+    # always (re)prepend exactly one canonical opener -- no counting, no assumption
+    # about which occurrence is "the real one".
+    _opener_re = re.compile(r"this week.?s brief covers \w+ signals?:", re.I)
+    lede = re.sub(r"<b>\s*" + _opener_re.pattern + r"\s*</b>", "", lede, flags=re.I)
+    lede = _opener_re.sub("", lede)
+    lede = re.sub(r"^[\s,]+", "", lede).strip()
+    lede = re.sub(r"\s{2,}", " ", lede)
+    # Strip any lingering name-leak the model still slipped in despite the
+    # instruction above -- "do not trust instruction-following for anything load-
+    # bearing" is this file's standing rule (same reasoning as the opener itself).
+    for name in names_to_avoid:
+        lede = re.sub(re.escape(name), "", lede, flags=re.I)
+    lede = re.sub(r"\s{2,}", " ", lede).strip(" ,")
+    lede = f"{fixed_opening} {lede}".strip() if lede else f"{fixed_opening.rstrip(':')}."
     lines = [_clean(x) for x in (data.get("top3") or [])][:3]
     while len(lines) < len(sections):
         i = len(lines)
