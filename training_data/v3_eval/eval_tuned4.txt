@@ -1,0 +1,25 @@
+
+[tuned4] TRIAGE test, ALL gold: 906 items, accuracy 81.1%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (52.0, 76.1, 61.8, 117), 'peer': (78.9, 91.5, 84.7, 212), 'other': (92.4, 78.3, 84.8, 577)}
+   rival->buyer: 7 | false buyers (other/peer->buyer): 82 | missed buyers (buyer->other): 26
+
+[tuned4] TRIAGE test, CLEAN gold (high+medium confidence): 812 items, accuracy 85.0%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (56.4, 80.6, 66.4, 98), 'peer': (83.3, 93.3, 88.0, 193), 'other': (94.5, 82.7, 88.2, 521)}
+   rival->buyer: 6 | false buyers (other/peer->buyer): 61 | missed buyers (buyer->other): 18
+
+[tuned4] CHECK test, ALL gold: 212 items, accuracy 85.4%, 'real move' precision 75.7% recall 92.9%, false-pass (not real -> real) 25, false-block (real -> not real) 6, invalid 0
+
+[tuned4] CHECK test, USABLE gold (high+medium conf, no defect): 193 items, accuracy 85.5%, 'real move' precision 76.1% recall 92.1%, false-pass (not real -> real) 22, false-block (real -> not real) 6, invalid 0
+
+[tuned4] VAL rows by kind: n, valid-JSON, truncated, words/sentence, >24w sentences, jargon, em-dashes
+   bullets          n=  4 json= 100% trunc=0 w/s= 15.6 >24w= 0.8 jargon=0.00 emdash=0.00
+   competitive_move_check n=104 json= 100% trunc=0 w/s=  0.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   competitor_card  n=  8 json= 100% trunc=0 w/s= 28.1 >24w= 2.0 jargon=0.50 emdash=0.00
+   customer_card    n= 13 json= 100% trunc=0 w/s= 28.6 >24w= 2.1 jargon=0.00 emdash=0.00
+   editorial_other  n= 20 json= 100% trunc=0 w/s= 26.0 >24w= 2.1 jargon=0.30 emdash=1.05
+   engagements      n=  5 json= 100% trunc=0 w/s= 25.8 >24w= 4.6 jargon=6.00 emdash=0.00
+   profile          n= 12 json= 100% trunc=0 w/s=161.7 >24w= 1.2 jargon=0.00 emdash=0.33
+   triage_role      n= 31 json= 100% trunc=0 w/s=  3.5 >24w= 0.0 jargon=0.00 emdash=0.00
+   vertical         n= 18 json= 100% trunc=0 w/s=  0.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   TOTAL n=215 truncated=0 invalid-JSON=0 errors=0
+EVAL_DONE

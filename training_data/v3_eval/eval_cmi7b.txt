@@ -1,0 +1,24 @@
+
+[cmi7b] TRIAGE test, ALL gold: 906 items, accuracy 67.9%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (28.8, 65.0, 39.9, 117), 'peer': (76.2, 85.8, 80.7, 212), 'other': (88.6, 61.9, 72.9, 577)}
+   rival->buyer: 19 | false buyers (other/peer->buyer): 188 | missed buyers (buyer->other): 35
+
+[cmi7b] TRIAGE test, CLEAN gold (high+medium confidence): 812 items, accuracy 70.3%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (28.4, 65.3, 39.6, 98), 'peer': (80.6, 86.0, 83.2, 193), 'other': (89.5, 65.5, 75.6, 521)}
+   rival->buyer: 17 | false buyers (other/peer->buyer): 161 | missed buyers (buyer->other): 30
+
+[cmi7b] CARDS test (abstain decision), ALL gold: 160 cards, accuracy 68.1%, abstain precision 87.3% recall 56.1%, over-abstain (wrote-gold -> abstained) 8, under-abstain (should abstain, wrote) 43, invalid JSON 0
+
+[cmi7b] CARDS test (abstain decision), CLEAN gold: 145 cards, accuracy 68.3%, abstain precision 87.7% recall 56.2%, over-abstain (wrote-gold -> abstained) 7, under-abstain (should abstain, wrote) 39, invalid JSON 0
+
+[cmi7b] VAL rows by kind: n, valid-JSON, truncated, words/sentence, >24w sentences, jargon, em-dashes
+   bullets          n=  4 json= 100% trunc=0 w/s= 18.1 >24w= 1.0 jargon=0.00 emdash=0.00
+   competitor_card  n= 18 json= 100% trunc=0 w/s= 31.0 >24w= 1.9 jargon=0.39 emdash=0.00
+   customer_card    n= 13 json= 100% trunc=0 w/s= 31.5 >24w= 1.6 jargon=0.00 emdash=0.00
+   editorial_other  n= 20 json= 100% trunc=0 w/s= 24.4 >24w= 1.8 jargon=0.25 emdash=1.15
+   engagements      n=  5 json= 100% trunc=0 w/s= 27.5 >24w= 5.4 jargon=6.00 emdash=0.00
+   profile          n= 12 json= 100% trunc=0 w/s=227.6 >24w= 1.0 jargon=0.08 emdash=0.17
+   triage_role      n= 31 json= 100% trunc=0 w/s=  5.1 >24w= 0.0 jargon=0.00 emdash=0.00
+   vertical         n= 18 json= 100% trunc=0 w/s=  0.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   TOTAL n=121 truncated=0 invalid-JSON=0 errors=0
+EVAL_DONE

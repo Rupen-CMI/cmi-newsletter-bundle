@@ -1,0 +1,25 @@
+
+[base] TRIAGE test, ALL gold: 906 items, accuracy 70.0%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (34.6, 68.4, 46.0, 117), 'peer': (70.7, 98.1, 82.2, 212), 'other': (90.8, 60.0, 72.2, 577)}
+   rival->buyer: 2 | false buyers (other/peer->buyer): 151 | missed buyers (buyer->other): 33
+
+[base] TRIAGE test, CLEAN gold (high+medium confidence): 812 items, accuracy 73.0%, invalid JSON prompts 0/135
+   per class (precision, recall, F1, support): {'buyer': (34.9, 69.4, 46.4, 98), 'peer': (74.8, 98.4, 85.0, 193), 'other': (92.3, 64.3, 75.8, 521)}
+   rival->buyer: 2 | false buyers (other/peer->buyer): 127 | missed buyers (buyer->other): 27
+
+[base] CHECK test, ALL gold: 212 items, accuracy 82.1%, 'real move' precision 97.9% recall 56.0%, false-pass (not real -> real) 1, false-block (real -> not real) 37, invalid 0
+
+[base] CHECK test, USABLE gold (high+medium conf, no defect): 193 items, accuracy 83.4%, 'real move' precision 97.8% recall 59.2%, false-pass (not real -> real) 1, false-block (real -> not real) 31, invalid 0
+
+[base] VAL rows by kind: n, valid-JSON, truncated, words/sentence, >24w sentences, jargon, em-dashes
+   bullets          n=  4 json= 100% trunc=0 w/s= 12.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   competitive_move_check n=104 json= 100% trunc=0 w/s=  0.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   competitor_card  n=  8 json= 100% trunc=0 w/s= 29.4 >24w= 2.0 jargon=0.38 emdash=0.00
+   customer_card    n= 13 json=  92% trunc=1 w/s= 29.1 >24w= 1.9 jargon=0.00 emdash=0.00
+   editorial_other  n= 20 json=  80% trunc=4 w/s= 22.9 >24w= 0.8 jargon=0.15 emdash=0.75
+   engagements      n=  5 json= 100% trunc=0 w/s= 20.1 >24w= 3.6 jargon=5.00 emdash=0.00
+   profile          n= 12 json=  58% trunc=5 w/s=303.2 >24w= 1.0 jargon=0.25 emdash=0.00
+   triage_role      n= 31 json= 100% trunc=0 w/s= 16.3 >24w= 0.0 jargon=0.00 emdash=0.00
+   vertical         n= 18 json= 100% trunc=0 w/s=  0.0 >24w= 0.0 jargon=0.00 emdash=0.00
+   TOTAL n=215 truncated=10 invalid-JSON=10 errors=0
+EVAL_DONE

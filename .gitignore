@@ -50,3 +50,8 @@ v4_adapter_share.zip
 # Raw lead exports and locally generated sample briefs (recipient-identifying).
 leads_export_*.csv
 qwen35_9b_finetune_briefs/
+
+# Stock Qwen3.5 tokenizer (20MB, identical across adapters; ships with the base model).
+training_data/v*_adapter*/tokenizer.json
+# Answer key for the blind review sheet -- keep it out of the reviewer's checkout.
+training_data/v4/REVIEW_KEY_DO_NOT_OPEN.csv
