@@ -55,3 +55,7 @@ qwen35_9b_finetune_briefs/
 training_data/v*_adapter*/tokenizer.json
 # Answer key for the blind review sheet -- keep it out of the reviewer's checkout.
 training_data/v4/REVIEW_KEY_DO_NOT_OPEN.csv
+
+# Local-only: Claude Code settings and a personal email signature.
+.claude/
+raj.html
