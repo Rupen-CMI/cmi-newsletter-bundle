@@ -184,7 +184,8 @@ def build_customer(triggers: list[Article], profile, log=print):
         # it. "India's drug regulator has formed an AI expert committee" landed in the
         # Potential Customer slot: a real signal, but a regulator has no purchase order
         # to give, and the model dutifully invented a reason it might buy.
-        non_buyers = ("regulator", "regulatory authority", "ministry", "government of",
+        non_buyers = ("regulator", "regulatory authority", "ministry", "government", "city of",
+                      "municipal", "city council",
                       "cdsco", "dcgi", "fda", "court", "tribunal", "parliament",
                       "association", "council", "committee", "commission", "board of",
                       "department of", "task force", "research institute", "journal")
@@ -531,7 +532,7 @@ def synthesize_news(arts: list[Article], profile, market_topic: str = "") -> lis
         "'index' (integer), 'headline' (punchy, faithful, plain text no angle brackets), and 'body_html' "
         "(the paragraph, inline <b>/<i> allowed). Finished prose, never placeholders."
     )
-    data = llm.chat_json(system, user, max_tokens=1300, default={})
+    data = llm.chat_json(system, user, max_tokens=2000, default={})
     items = data.get("items") if isinstance(data, dict) else None
     out: list[dict] = []
     if items:

@@ -133,6 +133,13 @@ class Profile:
     industry_queries: list[str]                 # structural / industry-trend queries
     market: str = "Global"                      # target country name, or "Global"
 
+    def __post_init__(self):
+        # Lead names arrive raw from the CRM export ("oyin", "HARSHIKA"); fix only
+        # single-case names so mixed-case ones ("McKenzie", "van der Berg") are kept.
+        r = (self.recipient or "").strip()
+        if r and r != "there" and (r.islower() or r.isupper()):
+            self.recipient = re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), r)
+
     # ---- constructors -------------------------------------------------------
     @classmethod
     def from_company(cls, company: str, website: str = "", recipient: str = "there",
@@ -255,7 +262,7 @@ class Profile:
             "  industry_query_seeds — 5 to 7 Google-News queries for structural/industry-trend stories that "
             "change what the seller's buyers expect"
         )
-        data = llm.chat_json(system, user, max_tokens=1100, default={}) or {}
+        data = llm.chat_json(system, user, max_tokens=2500, default={}) or {}
 
         industries = _as_str_list(data.get("target_industries"))[:7]
         # competitors is now a list of {"name", "their_product"} objects, not bare

@@ -305,7 +305,8 @@ def chat_json(system: str, user: str, *, temperature: float | None = None,
     try:
         return _parse_json(raw)
     except Exception as e:  # noqa: BLE001 — genuine parse failure, one retry is reasonable
-        _safe_print(f"  [llm] json parse failed, retrying once: {type(e).__name__}: {str(e)[:80]}")
+        _safe_print(f"  [llm] json parse failed, retrying once (max_tokens={max_tokens}, len={len(raw)}): "
+                    f"{type(e).__name__}: {str(e)[:80]} | system={system[:60]!r}")
 
     raw = chat(system, user, json_mode=True, temperature=temperature, max_tokens=max_tokens)
     try:

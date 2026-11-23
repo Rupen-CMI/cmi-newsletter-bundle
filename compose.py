@@ -179,7 +179,7 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
             "subject above, covering supplier and demand, manufacturing or capacity, "
             "pricing and access, and customer readiness across the four.\n"
             f"Do not write the words '{profile.company}' anywhere in the output.")
-    data = llm.chat_json(system, user, max_tokens=1200, default={}) or {}
+    data = llm.chat_json(system, user, max_tokens=2000, default={}) or {}
     projects = [{"title": _clean(p.get("title", "")), "body_html": _clean(p.get("body_html", ""))}
                 for p in (data.get("projects") or [])][:4]
     industry = _clean(data.get("industry", "")) or subject
