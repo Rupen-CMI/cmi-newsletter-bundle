@@ -84,7 +84,11 @@ GN_DEFAULT_LOCALE = ("en-US", "US", "US:en")
 # News RSS returns the headline again) and a publisher URL inside the `url=` parameter.
 BING_NEWS = "https://www.bing.com/news/search?q={q}&format=rss&setlang=en-US"
 HTTP_UA = "Mozilla/5.0 (compatible; CoherentConnect-Newsletter/1.0)"
-LOOKBACK_HOURS = 96  # signals older than this are dropped
+# Industry/market news window. 96 hours left thin leads with almost nothing (Dabew:
+# 3 eligible industry articles in 96h vs 41 in 3 months, 2026-11-23 window test,
+# session_scratch/window_test.py). Past 3 months the pool grows ~10-20% a month but
+# 100+-day-old stories start winning the top slots, so stop at three.
+LOOKBACK_HOURS = 24 * 91  # signals older than this are dropped
 
 # Competitor signals get a much longer window than triggers. The two are not the same
 # kind of fact: a buyer's funding round is only actionable while the money is still
@@ -270,7 +274,10 @@ SCORING = {
     "w_freshness": 0.25,
     "w_importance": 0.35,
     # Freshness decay (hours → factor). Piecewise, mirrors mother repo's freshness_score.
-    "freshness_bands": [(24, 1.00), (48, 0.85), (72, 0.65), (96, 0.45), (168, 0.25)],
+    "freshness_bands": [(24, 1.00), (48, 0.85), (72, 0.65), (96, 0.45), (168, 0.25),
+                        # tail added with the 3-month window so a 2-week-old story
+                        # still outranks a 2-month-old one instead of both hitting the floor
+                        (24 * 14, 0.20), (24 * 30, 0.16), (24 * 60, 0.12)],
     "freshness_floor": 0.10,
     # Minimum composite for a signal to be eligible for the newsletter at all.
     "min_composite": 0.18,
