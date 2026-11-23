@@ -224,13 +224,29 @@ def is_research_pr(source: str, title: str) -> bool:
 
 
 def get_country(name: str) -> dict:
-    """Resolve a country by name/alias → its profile dict. Unknown → Global."""
+    """Resolve a country by name/alias/ISO2 -> its profile dict.
+
+    Order: the 12 curated COUNTRIES entries (they carry hand-picked outlet lists)
+    first, then the full regions.py table (~180 countries, the country-first
+    evidence filter's source of truth), then Global. Unknown/blank -> Global, as
+    before."""
     if not name:
         return COUNTRIES["Global"]
     n = name.strip().lower()
     for key, prof in COUNTRIES.items():
         if key.lower() == n or n in [a.strip().lower() for a in prof.get("aliases", [])] or prof["name"].lower() == n:
             return prof
+    # Late import: regions.py is the wide table and must not import config back.
+    import regions
+    rp = regions.get_profile(name)
+    if rp:
+        # A curated country reached via an ISO2 code or an alias the curated
+        # dict doesn't carry ("PL", "South Korea") should still return the
+        # curated entry with its outlets.
+        for prof in COUNTRIES.values():
+            if prof["name"].lower() == rp["name"].lower():
+                return prof
+        return rp
     return COUNTRIES["Global"]
 
 # Trigger discovery queries (company-level buying triggers in CMI's verticals).

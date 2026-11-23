@@ -30,6 +30,7 @@ import concurrent.futures as cf
 import dataclasses
 import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -105,6 +106,20 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
     _log(f"  {len(jobs)} briefs ({len(leads)} leads x {len(kinds)} kind(s)), "
          f"{workers} workers")
 
+    # The leads table is authoritative for each lead's country (country-first
+    # evidence filtering). One upfront query keyed by lowercased email, read here
+    # in the main thread so workers never touch the shared connection. A leads
+    # table without the country columns (not yet migrated) keeps the old
+    # behaviour: fall back to the sheet's own country value.
+    lead_country_map: dict[str, tuple[str, str]] = {}
+    try:
+        for r in conn.execute(
+                "SELECT email, country, country_source FROM leads").fetchall():
+            lead_country_map[(r["email"] or "").strip().lower()] = (
+                (r["country"] or "").strip(), (r["country_source"] or "").strip())
+    except sqlite3.OperationalError:
+        pass
+
     # A dead LLM endpoint used to degrade silently into hollow-but-valid-looking
     # briefs (see llm.chat_json). Now every LLM call failure raises immediately, so
     # an outage shows up here as many workers hitting "LLM provider ... failed" at
@@ -118,9 +133,23 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
     def one(job):
         lead, kind = job
         t0 = time.time()
-        row = {"email": lead["email"], "company": lead["company"], "kind": kind}
+        row = {"email": lead["email"], "company": lead["company"], "kind": kind,
+               "country": ""}
         try:
-            country = config.get_country(lead["country"])
+            # DB country wins over the sheet's own value; an unresolved DB country
+            # means there is no defensible place for this brief — skip it rather
+            # than generate a Global (unfiltered) brief.
+            db_country, db_source = lead_country_map.get(
+                lead["email"].strip().lower(), ("", ""))
+            if db_source == "unresolved":
+                row.update(html="", topic="", path="", profile=None,
+                           secs=round(time.time() - t0, 1),
+                           error="country unresolved")
+                return row
+            country_name = db_country if (db_country and db_source != "unresolved") \
+                else lead["country"]
+            country = config.get_country(country_name)
+            row["country"] = country["name"]
             # get_conn() is safe to call from a worker thread -- it hands back a
             # connection cached per-thread (see db.py), never the main thread's
             # connection object. Passed through so from_company can reuse the
@@ -136,19 +165,24 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             # market opened with electric-truck news and said outright that the signal
             # named no drone company. Collect for the topic itself as well.
             topic_q = lead.get("topic", "") if kind == "report" else ""
+            topic_arts = []
             if topic_q:
-                from collect import collect_queries
+                from collect import collect_topic
 
-                base = topic_q.replace(" Market", "").replace(" market", "").strip()
-                qs = [topic_q, f"{base} market growth", f"{base} companies",
-                      f"{base} industry India"]
                 try:
-                    arts = arts + collect_queries(qs, country, bucket="industry")
+                    topic_arts = collect_topic(topic_q, country)
                 except Exception:  # noqa: BLE001 -- topic news is a bonus, not required
-                    pass
+                    topic_arts = []
+            # Country-first evidence filter over ALL articles -- company queries AND
+            # topic queries alike (applied AFTER the topic merge): keep the lead's
+            # own country, drop pure other-country evidence (explicit-link rule),
+            # keep no-geo industry articles, and only fall back to same-REGION
+            # countries when trigger+competitor evidence runs dry. Never the
+            # unfiltered pool. A Global lead is unfiltered, as before.
+            arts = arts + topic_arts
             if not geo.is_global(country):
-                arts, _ = geo.filter_country(arts, country)
-            scored = score_all(arts, profile)
+                arts, _geo_scope = geo.filter_for_lead(arts, country)
+            scored = score_all(arts, profile, topic=topic_q)
             keep = eligible(scored)
             topic = lead.get("topic", "") if kind == "report" else ""
             # `keep or scored`: a thin-coverage lead can score everything below
@@ -201,7 +235,7 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             results.append(r)
             flag = "ERROR" if r["error"] else "ok"
             _log(f"  [{i}/{len(jobs)}] {r['company'][:20]:<22}{r['kind']:<8}"
-                 f"{flag:<6}{r['secs']:>6}s")
+                 f"{flag:<6}{r['secs']:>6}s {r.get('country', '') or '-'}")
             if r["error"]:
                 _log(f"        {r['error']}")
 
@@ -256,7 +290,8 @@ def stage_validate(conn, results: list[dict]) -> dict:
         try:
             fails, warns, llm_fails, llm_warns = vb.check_detailed(
                 r["path"], r["profile"], email=r.get("email", ""),
-                kind=r.get("kind", ""), topic=expected_subject or "")
+                kind=r.get("kind", ""), topic=expected_subject or "",
+                lead_country=r.get("country") or None)
         except Exception as e:  # noqa: BLE001 -- a broken check must not fail the brief
             fails, warns, llm_fails, llm_warns = [], [f"validator error: {type(e).__name__}: {e}"], [], []
         # Text-rule status first -- this is what actually gates sending, unchanged from

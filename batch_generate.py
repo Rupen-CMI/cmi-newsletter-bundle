@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import os
+import sqlite3
 import sys
 import time
 
@@ -105,6 +106,7 @@ def main() -> None:
 
     import compose
     import config
+    import db
     import geo
     import llm
     import render
@@ -126,6 +128,20 @@ def main() -> None:
     if not args.no_dedupe:
         leads = dedupe_by_company(leads)[: args.limit]
 
+    # The leads table is authoritative for each lead's country (same rule as
+    # pipeline.stage_generate): keyed by lowercased email, read in the main
+    # thread. A leads table without the country columns (not yet migrated)
+    # keeps the old behaviour -- the sheet's own country value.
+    lead_country_map: dict[str, tuple[str, str]] = {}
+    try:
+        conn = db.get_conn()
+        for r in conn.execute(
+                "SELECT email, country, country_source FROM leads").fetchall():
+            lead_country_map[(r["email"] or "").strip().lower()] = (
+                (r["country"] or "").strip(), (r["country_source"] or "").strip())
+    except sqlite3.OperationalError:
+        pass
+
     print(f"endpoint: {llm.LOCAL_BASE_URL}")
     print(f"{len(leads)} companies to generate\n")
     for l in leads:
@@ -145,14 +161,30 @@ def main() -> None:
     def _one(idx_lead):
         i, lead = idx_lead
         t0 = time.time()
-        row = {"company": lead["company"], "website": bool(lead["website"])}
+        row = {"company": lead["company"], "website": bool(lead["website"]),
+               "country": ""}
         try:
-            country = config.get_country(lead["country"])
+            # DB country wins over the sheet value; unresolved in the DB means
+            # skip -- a Global (unfiltered) brief is worse than no brief.
+            db_country, db_source = lead_country_map.get(
+                lead["email"].strip().lower(), ("", ""))
+            if db_source == "unresolved":
+                row.update(status="ERROR", error="country unresolved",
+                           secs=round(time.time() - t0), fails=[], warns=[])
+                return row
+            country_name = db_country if (db_country and db_source != "unresolved") \
+                else lead["country"]
+            country = config.get_country(country_name)
+            row["country"] = country["name"]
             profile = Profile.from_company(lead["company"], lead["website"],
                                            lead["name"], country["name"])
             arts = collect(profile, country)
+            # Country-first evidence filter (same rules as pipeline.stage_generate):
+            # keep the lead's own country, drop pure other-country evidence, keep
+            # no-geo industry articles, region fallback only within the lead's
+            # region. Never the unfiltered pool.
             if not geo.is_global(country):
-                arts, _ = geo.filter_country(arts, country)
+                arts, _geo_scope = geo.filter_for_lead(arts, country)
             scored = score_all(arts, profile)
             keep = eligible(scored)
             _topic = lead.get("topic", "") if args.kind == "report" else ""
@@ -193,7 +225,8 @@ def main() -> None:
         for pair in enumerate(leads, 1):
             r = _one(pair)
             results.append(r)
-            print(f"[{pair[0]}/{len(leads)}] {r['company']}: {r['status']} {r['secs']}s", flush=True)
+            print(f"[{pair[0]}/{len(leads)}] {r['company']}: {r['status']} "
+                  f"{r['secs']}s {r.get('country', '') or '-'}", flush=True)
     else:
         with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
             futs = {ex.submit(_one, pair): pair for pair in enumerate(leads, 1)}
@@ -202,7 +235,8 @@ def main() -> None:
                 r = fut.result()
                 results.append(r)
                 done += 1
-                print(f"[{done}/{len(leads)}] {r['company']}: {r['status']} {r['secs']}s", flush=True)
+                print(f"[{done}/{len(leads)}] {r['company']}: {r['status']} "
+                      f"{r['secs']}s {r.get('country', '') or '-'}", flush=True)
                 for f_ in r.get("fails", []):
                     print(f"        x {f_}")
                 for w_ in r.get("warns", []):

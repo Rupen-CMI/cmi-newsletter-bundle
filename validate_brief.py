@@ -114,14 +114,48 @@ def name_overlap(a: str, b: str) -> bool:
 
 
 def check(path: str, profile, *, email: str = "", kind: str = "",
-         topic: str = "") -> tuple[list[str], list[str]]:
+          topic: str = "", lead_country: str | None = None) -> tuple[list[str], list[str]]:
     fails, warns, _llm_fails, _llm_warns = check_detailed(
-        path, profile, email=email, kind=kind, topic=topic)
+        path, profile, email=email, kind=kind, topic=topic,
+        lead_country=lead_country)
     return fails + _llm_fails, warns + _llm_warns
 
 
+def geo_scrub(text: str, profile) -> str:
+    """Strip salutation/header/footer boilerplate and the lead's own names before
+    the geography check counts countries (2026-11 live run: the recipient's first
+    name "Sanaa" was read as Yemen's capital Sanaa and flagged OFF-COUNTRY).
+
+    Removed: "Hello, <name>." salutation lines, "Prepared for ..." lines,
+    "Market Signal Brief · ..." lines, and word-boundary occurrences of the
+    recipient's first name and the lead company's name — none of that is
+    evidence about where the NEWS happened.
+    """
+    t = text
+    t = re.sub(r"(?im)^\s*hello,?\s+[a-z .'-]{1,40}[.!?]?\s*$", " ", t)
+    t = re.sub(r"(?im)^.*\bprepared for\b.*$", " ", t)
+    t = re.sub(r"(?im)^.*market signal brief\s*·.*$", " ", t)
+    # the recipient's first name must never count as a city/country token
+    r = (getattr(profile, "recipient", "") or "").strip()
+    if r and r.lower() not in ("there", "there,", "hi", "hello"):
+        first = re.split(r"\s+", r)[0].strip(".,")
+        if first and len(first) >= 4:
+            t = re.sub(rf"(?<![0-9a-z]){re.escape(first.lower())}(?![0-9a-z])",
+                       " ", t, flags=re.I)
+    # the lead company's name likewise ("Georgia-Pacific" must not read as the
+    # country or the US state)
+    comp = (getattr(profile, "company", "") or "").strip()
+    if comp:
+        comp_norm = re.sub(r"\s+", " ", re.sub(r"[^0-9a-z ]", " ", comp.lower())).strip()
+        if comp_norm:
+            t = re.sub(rf"(?<![0-9a-z]){re.escape(comp_norm)}(?![0-9a-z])",
+                       " ", t, flags=re.I)
+    return t
+
+
 def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
-                   topic: str = "") -> tuple[list[str], list[str], list[str], list[str]]:
+                   topic: str = "", lead_country: str | None = None
+                   ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Same checks as `check()`, but keeps the LLM judge's findings separate from the
     text-rule findings so a caller can tell "a keyword rule caught this" apart from
     "the AI judge flagged this" -- the latter needs a human to read the reasoning and
@@ -689,6 +723,116 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
             f"{dup_count} times -- the model echoed the opener back into its own "
             f"continuation.")
 
+    # ---- LEDE_NAME_LEAK (independent of profile) -----------------------------
+    # 2026-10-29: confirmed by the user that naming the specific entity in the
+    # lede (e.g. "a potential customer Candid Health raises $120 million...",
+    # "Apple is expanding its retail...") is WRONG -- it hands the reader the
+    # whole headline before they have any reason to keep reading. The lede may
+    # add generic color (geography/sector/theme) but must never use the entity's
+    # own proper name; that belongs only in the numbered card's own <h3> title
+    # below. Pull each card's real title out of its own <h3> (the template
+    # renders `{{ sec.title }}` there for both report and signal briefs) and
+    # check it does not also appear in the lede paragraph.
+    lede_html_m = re.search(r'<p class="lede">(.*?)</p>', html, re.S)
+    if lede_html_m:
+        lede_only_text = re.sub(r"<[^>]+>", " ", lede_html_m.group(1))
+        lede_only_text = re.sub(r"\s{2,}", " ", lede_only_text).strip()
+        for title_m in re.finditer(r"<h3>([^<]{2,80})</h3>", html):
+            card_title = title_m.group(1).strip()
+            if not card_title or card_title == "—":
+                continue
+            # Skip the fixed "Inside CMI" marketing h3 (not a signal card title).
+            if "50+ countries" in card_title or "revenue-driven opportunities" in card_title:
+                continue
+            if re.search(re.escape(card_title), lede_only_text, re.I):
+                fails.append(
+                    f"LEDE NAME LEAK ERROR: the lede names the specific entity "
+                    f"'{card_title}' -- the lede must only use the generic label "
+                    f"(e.g. 'a potential customer'), never the entity's own name. "
+                    f"Specifics belong in the numbered card only.")
+
+    # ---- GEOGRAPHY (optional; only when the lead's country is known) ---------
+    # Country-first rule, checked on the RENDERED brief: every section is about
+    # the lead's own country, or explicitly names it alongside other countries
+    # (the explicit-link rule). Detection is the same word-boundary country
+    # matcher generation uses (regions.countries_in_text), run per section.
+    #   WARN  OFF-COUNTRY      one section names other countries but never the
+    #                          lead's own
+    #   FAIL  MIXED GEOGRAPHY  two sections each name only DIFFERENT non-lead
+    #                          countries -- the brief is not about one place
+    # `lead_country=None` (the default) skips the check entirely, so every
+    # existing caller and the checks above are unchanged.
+    if lead_country:
+        try:
+            import regions as _regions
+
+            _prof = _regions.get_profile(lead_country)
+        except Exception:  # noqa: BLE001 -- a broken geo check must not fail the brief
+            _prof = None
+        if _prof and _prof.get("iso2"):
+            _lead_iso = _prof["iso2"]
+            _lead_name = _prof["name"]
+            # Boilerplate first: salutation ("Hello, Sanaa."), "Prepared for ...",
+            # "Market Signal Brief · ..." and the recipient/company names carry
+            # place-like words that are not evidence about the news.
+            try:
+                _geo_text = geo_scrub(text, profile)
+            except Exception:  # noqa: BLE001 -- a broken scrub must not fail the brief
+                _geo_text = text
+            # Section labels mark each section's end, so a section's body cannot
+            # bleed into the next one (the plain 1500-char window above the
+            # STRUCTURE check would count the NEXT section's geography too).
+            _all_labels = {a for s in expected_sections
+                           for a in SECTION_ALIASES.get(s, (s,))}
+            _label_starts = sorted(m.start() for alias in _all_labels
+                                   for m in re.finditer(
+                                       rf"\b{re.escape(alias)}\b", _geo_text))
+            _sec_geo: dict[str, set[str]] = {}
+            for s in expected_sections:
+                # Split sections the same way the STRUCTURE check above does.
+                _start = _end = -1
+                for alias in SECTION_ALIASES.get(s, (s,)):
+                    m = re.search(rf"{re.escape(alias)}\s*·(.{{0,1500}})", _geo_text, re.S)
+                    if m:
+                        _start, _end = m.start(), m.end()
+                        break
+                if _start < 0:
+                    for alias in SECTION_ALIASES.get(s, (s,)):
+                        m2 = re.search(rf"\b{re.escape(alias)}\b", _geo_text)
+                        if m2:
+                            _start, _end = m2.end(), m2.end() + 1500
+                            break
+                if _start < 0:
+                    continue
+                _next = [p for p in _label_starts if p > _start + 2]
+                if _next:
+                    _end = min(_end, _next[0])
+                _cset = _regions.countries_in_text(_geo_text[_start:_end])
+                if _cset:
+                    _sec_geo[s] = _cset
+            _off: list[tuple[str, set[str]]] = []
+            for _label, _cset in _sec_geo.items():
+                _others = _cset - {_lead_iso}
+                if _others and _lead_iso not in _cset:
+                    _names = ", ".join(_regions.name_of(i) or i
+                                       for i in sorted(_others))
+                    warns.append(f"OFF-COUNTRY: section '{_label}' mentions "
+                                 f"{_names} but not {_lead_name}.")
+                    _off.append((_label, _others))
+            for _i in range(len(_off)):
+                for _j in range(_i + 1, len(_off)):
+                    if not (_off[_i][1] & _off[_j][1]):
+                        fails.append(
+                            f"MIXED GEOGRAPHY: sections '{_off[_i][0]}' and "
+                            f"'{_off[_j][0]}' each name only different non-lead "
+                            f"countries ({', '.join(sorted(_off[_i][1]))} vs "
+                            f"{', '.join(sorted(_off[_j][1]))}) -- the brief is "
+                            f"not about one place.")
+                        break
+                else:
+                    continue
+                break
+
     # Rules above are keyword checks. They cannot tell that Reckitt is VVF's CUSTOMER
     # rather than its rival -- that needs judgement, so ask the model that wrote the
     # brief. Off unless CMI_LLM_VALIDATE=1, and it only ever ADDS findings: a judge
@@ -713,7 +857,8 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
 
 
 def check_html(html: str, profile, *, email: str = "", kind: str = "",
-              topic: str = "") -> tuple[list[str], list[str]]:
+              topic: str = "", lead_country: str | None = None
+              ) -> tuple[list[str], list[str]]:
     """Same as `check()`, but takes HTML text directly instead of a file path --
     for gating a send before the brief is written to disk."""
     import os
@@ -723,7 +868,8 @@ def check_html(html: str, profile, *, email: str = "", kind: str = "",
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(html)
-        return check(tmp_path, profile, email=email, kind=kind, topic=topic)
+        return check(tmp_path, profile, email=email, kind=kind, topic=topic,
+                     lead_country=lead_country)
     finally:
         os.unlink(tmp_path)
 
