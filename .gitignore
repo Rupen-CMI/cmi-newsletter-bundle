@@ -38,3 +38,15 @@ session_scratch/*
 
 # One-off audit notes, not part of the shipped codebase.
 PIPELINE_AUDIT.md
+
+# DB backups taken before migrations (contain lead data).
+*.db.bak*
+
+# Fine-tune adapter weights and share bundles (300MB+ each).
+training_data/*adapter*/*.safetensors
+v4_adapter_share/
+v4_adapter_share.zip
+
+# Raw lead exports and locally generated sample briefs (recipient-identifying).
+leads_export_*.csv
+qwen35_9b_finetune_briefs/
