@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone
 
 import config
+import relevance
 from collect import Article
 
 _TRIG = config.TRIGGER_TYPES
@@ -185,12 +186,26 @@ def _stem(w: str) -> str:
     return w
 
 
-def topic_tokens(topic: str) -> list[str]:
+def topic_drop_words(market: str) -> set[str]:
+    """The lead country's own words ("spain", "spanish"): a topic like "Spain Data Center"
+    must not demand them in the headline -- geo already handles the country."""
+    import regions
+    import tenant
+    prof = regions.get_profile(market or "") or {}
+    iso2 = prof.get("iso2") or ""
+    if not iso2:
+        return set()
+    return {w for ph in tenant._country_words(iso2) for w in ph.lower().split()}
+
+
+def topic_tokens(topic: str, drop: set[str] | None = None) -> list[str]:
     seen: list[str] = []
     for w in re.findall(r"[a-z0-9]+", (topic or "").lower()):
-        if w in _TOPIC_STOP or len(w) < 3:
+        if w in _TOPIC_STOP or len(w) < 3 or w.isdigit():
             continue
         s = _stem(w)
+        if drop and (w in drop or s in drop):
+            continue
         if s not in seen:
             seen.append(s)
     return seen
@@ -207,10 +222,33 @@ def topic_relevance(a: Article, tokens: list[str]) -> float:
     rel = min(1.0, hits / len(tokens))
     if len(tokens) >= 2 and " ".join(tokens) in " ".join(_stem(w) for w in re.findall(r"[a-z0-9]+", (a.title or "").lower())):
         rel = min(1.0, rel + 0.2)
+    # Two consecutive topic words adjacent in the headline ("monoclonal antibodies") are
+    # on-topic on their own: 60% of a 3-4 word topic is too strict for a headline.
+    hw = [_stem(w) for w in re.findall(r"[a-z0-9]+", (a.title or "").lower())]
+    adj = {(hw[i], hw[i + 1]) for i in range(len(hw) - 1)}
+    if any((tokens[i], tokens[i + 1]) in adj for i in range(len(tokens) - 1)):
+        rel = max(rel, 0.7)
     return round(rel, 3)
 
 
 TOPICAL = 0.6     # topic_rel at or above this counts as being about the topic
+
+
+# ── 5. SELLER RELEVANCE (embedding) ──────────────────────────────────────────
+# Cosine between the article and the seller text (relevance.py, multilingual MiniLM).
+# Cosine is ~0.0-0.1 for unrelated text, ~0.3+ for same-subject text, so it is rescaled
+# to 0..1 between SELLER_REL_LO and SELLER_REL_HI before it feeds the relevancy axis.
+SELLER_REL_LO = 0.0
+SELLER_REL_HI = 0.30
+# eligible() drops an article only when it is BOTH in the bottom SELLER_REL_PERCENTILE of
+# its pool AND below SELLER_REL_FLOOR in absolute terms: the percentile alone would always
+# cut 30% of even a pool of good items, the floor alone would gut a thin-coverage pool.
+SELLER_REL_PERCENTILE = 30
+SELLER_REL_FLOOR = 0.10
+
+
+def _scaled_seller_rel(cos: float) -> float:
+    return max(0.0, min(1.0, (cos - SELLER_REL_LO) / (SELLER_REL_HI - SELLER_REL_LO)))
 
 
 # ── Composite ────────────────────────────────────────────────────────────────
@@ -218,15 +256,26 @@ def score_all(articles: list[Article], profile, topic: str = "") -> list[Article
     """`topic` (report briefs) only ANNOTATES each article with topic_rel; it never
     changes composite or eligibility, so every other section behaves exactly as before.
     brief_builder uses topic_rel to choose the 'Your Market' evidence."""
-    toks = topic_tokens(topic)
-    for a in articles:
+    toks = topic_tokens(topic, topic_drop_words(getattr(profile, "market", "")))
+    # Embedding similarity of every article to the seller; None per article (or overall)
+    # when the local model is unavailable -> bucket floors below apply as before.
+    try:
+        sims = relevance.seller_relevance(articles, profile)
+    except Exception:  # noqa: BLE001 -- never let the optional model break scoring
+        sims = None
+    for i, a in enumerate(articles):
+        a.seller_rel = sims[i] if sims is not None else None
         a.topic_rel = topic_relevance(a, toks) if toks else 0.0
         rel, inds = relevancy(a, profile.industry_keywords)
         # Bucket-based relevancy floor: a trigger/industry article already matched a
         # seller-SCOPED query, so it is topically relevant even if the keyword lexicon
         # (LLM-inferred, sometimes narrow) missed it. Prevents broad-market sellers from
         # losing every prospect to relevancy=0.
-        if a.bucket == "trigger":
+        # With the embedding score the floor is REPLACED by how related the article really
+        # is to the seller; the fixed floors stay as the fallback when there is no model.
+        if a.seller_rel is not None:
+            rel = max(rel, _scaled_seller_rel(a.seller_rel))
+        elif a.bucket == "trigger":
             rel = max(rel, 0.35)
         elif a.bucket == "industry":
             rel = max(rel, 0.25)
@@ -238,7 +287,26 @@ def score_all(articles: list[Article], profile, topic: str = "") -> list[Article
             _S["w_relevancy"] * rel + _S["w_freshness"] * fr + _S["w_importance"] * imp, 4
         )
     articles.sort(key=lambda x: x.composite, reverse=True)
+    try:
+        import evidence_score
+        evidence_score.score_evidence(articles, profile)   # annotation only
+    except Exception:  # noqa: BLE001
+        pass
     return articles
+
+
+def passes_relevance_floor(a: Article) -> bool:
+    """The relevance gate's ABSOLUTE floor, without its pool-relative percentile: True when
+    the article has no embedding score (model unavailable) or its seller_rel is at or
+    above SELLER_REL_FLOOR. Below it the article is unrelated to the seller."""
+    sr = getattr(a, "seller_rel", None)
+    return sr is None or sr >= SELLER_REL_FLOOR
+
+
+def fallback_pool(scored: list[Article]) -> list[Article]:
+    """What a brief is built from when eligible() returns nothing: items that are safe to
+    cite AND clear the relevance floor, so unrelated news cannot return via the fallback."""
+    return [a for a in scored if not is_unsafe_to_cite(a) and passes_relevance_floor(a)]
 
 
 def eligible(articles: list[Article]) -> list[Article]:
@@ -252,4 +320,15 @@ def eligible(articles: list[Article]) -> list[Article]:
     # release, "Source: MarketsandMarkets ->" link included). Filtering here, in the
     # one function every section's candidate pool passes through, closes it for all
     # of them at once rather than patching each section separately.
-    return [a for a in articles if a.composite >= _S["min_composite"] and not is_unsafe_to_cite(a)]
+    out = [a for a in articles if a.composite >= _S["min_composite"] and not is_unsafe_to_cite(a)]
+    # Seller-relevance gate (embedding score; skipped when the model was unavailable):
+    # drop what is clearly unrelated to the seller -- national headlines that merely rode
+    # in on a seller-scoped query. Threshold is relative to the pool AND absolute.
+    sims = [a.seller_rel for a in out if getattr(a, "seller_rel", None) is not None]
+    if len(sims) >= 10:
+        sims_sorted = sorted(sims)
+        cut = sims_sorted[int(len(sims_sorted) * SELLER_REL_PERCENTILE / 100)]
+        thr = min(cut, SELLER_REL_FLOOR)
+        out = [a for a in out
+               if getattr(a, "seller_rel", None) is None or a.seller_rel >= thr]
+    return out
