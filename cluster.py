@@ -58,7 +58,8 @@ def cluster_articles(articles: list[Article], k: int | None = None) -> list[Clus
         # top TF-IDF terms for this centroid → human label
         centroid = km.cluster_centers_[cid]
         top_idx = centroid.argsort()[::-1][:3]
-        top_terms = [terms[j] for j in top_idx if centroid[j] > 0]
+        top_terms = [terms[j] for j in top_idx
+                     if centroid[j] > 0 and "nbsp" not in str(terms[j]).lower().split()]
         label = " / ".join(t.title() for t in top_terms)
         clusters.append(Cluster(label=label, top_terms=top_terms, articles=members))
 

@@ -123,6 +123,12 @@ def enrich_company(name: str, country: dict | None = None) -> dict:
     return result
 
 
+def background_block(enr: dict) -> str:
+    """context_block without the recent headlines: who the company is, not other news
+    (the writer fused unrelated headlines into the main story)."""
+    return context_block({**enr, "recent_news": None})
+
+
 def context_block(enr: dict) -> str:
     """Render enrichment into a compact text block for an LLM prompt (empty if nothing)."""
     parts = []

@@ -29,10 +29,102 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import re
 import sys
 
-FREE_MAIL = {"gmail.com", "yahoo.com", "yahoo.co.in", "hotmail.com", "outlook.com",
-             "rediffmail.com", "live.com", "icloud.com", "protonmail.com", "aol.com"}
+# Personal / free-mail domains. The single list: batch_generate.py imports it.
+FREE_MAIL = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "yahoo.co.uk", "yahoo.fr",
+    "yahoo.de", "ymail.com", "rocketmail.com", "hotmail.com", "hotmail.co.uk", "hotmail.fr",
+    "hotmail.de", "hotmail.it", "outlook.com", "outlook.de", "live.com", "live.com.au",
+    "live.co.uk", "live.de", "live.fr", "msn.com", "icloud.com", "me.com", "mac.com",
+    "aol.com", "protonmail.com", "proton.me", "pm.me", "tutanota.com", "zoho.com",
+    "zohomail.com", "mail.com", "gmx.net", "gmx.de", "gmx.com", "gmx.ch", "gmx.at",
+    "web.de", "t-online.de", "freenet.de", "yandex.ru", "yandex.com", "mail.ru", "bk.ru",
+    "inbox.ru", "list.ru", "rambler.ru", "qq.com", "163.com", "126.com", "sina.com",
+    "sohu.com", "aliyun.com", "naver.com", "daum.net", "hanmail.net", "rediffmail.com",
+    "libero.it", "virgilio.it", "orange.fr", "free.fr", "laposte.net", "sfr.fr", "wp.pl",
+    "o2.pl", "onet.pl", "interia.pl", "seznam.cz", "bigpond.com", "optusnet.com.au",
+    "shaw.ca", "rogers.com", "sympatico.ca", "comcast.net", "verizon.net", "att.net",
+    "sbcglobal.net", "btinternet.com", "sky.com", "virginmedia.com", "terra.com.br",
+    "uol.com.br", "bol.com.br",
+}
+
+_NO_COMPANY = {"", "none", "n/a", "na", "-", "null", "nil", "not available"}
+
+
+_CC_TLD = {"de": "DE", "fr": "FR", "it": "IT", "ch": "CH", "uk": "GB", "ca": "CA", "au": "AU",
+           "jp": "JP", "kr": "KR", "cn": "CN", "es": "ES", "nl": "NL", "ae": "AE", "in": "IN",
+           "be": "BE", "at": "AT", "se": "SE", "no": "NO", "dk": "DK", "fi": "FI", "pl": "PL",
+           "pt": "PT", "ie": "IE", "br": "BR", "mx": "MX", "sg": "SG", "nz": "NZ", "za": "ZA",
+           "tr": "TR", "ru": "RU", "sa": "SA", "hk": "HK", "tw": "TW", "il": "IL", "lu": "LU"}
+_COUNTRY_NAMES = {
+    "korea": "KR", "south korea": "KR", "republic of korea": "KR", "germany": "DE",
+    "deutschland": "DE", "france": "FR", "italy": "IT", "italia": "IT", "switzerland": "CH",
+    "schweiz": "CH", "suisse": "CH", "united kingdom": "GB", "uk": "GB", "england": "GB",
+    "canada": "CA", "australia": "AU", "japan": "JP", "china": "CN", "spain": "ES",
+    "netherlands": "NL", "the netherlands": "NL", "united arab emirates": "AE", "uae": "AE",
+    "india": "IN", "belgium": "BE", "austria": "AT", "sweden": "SE", "norway": "NO",
+    "denmark": "DK", "finland": "FI", "poland": "PL", "portugal": "PT", "ireland": "IE",
+    "brazil": "BR", "mexico": "MX", "singapore": "SG", "new zealand": "NZ",
+    "south africa": "ZA", "turkey": "TR", "saudi arabia": "SA", "hong kong": "HK",
+    "taiwan": "TW", "israel": "IL", "luxembourg": "LU", "united states": "US", "usa": "US",
+    "u.s.a.": "US"}
+
+
+def hq_country_from_site(text: str, domain: str = "") -> str:
+    """ISO2 of the company's HQ when the homepage states it: an explicit country name
+    closing a postal-address line ("..., Seoul, Korea") wins, else a country-code TLD.
+    Generic TLDs and ambiguous text give ''."""
+    names = sorted(_COUNTRY_NAMES, key=len, reverse=True)
+    pat = re.compile(r",\s*(" + "|".join(re.escape(n) for n in names) + r")\b\.?(?=\s*(?:[,;|.)]|\d|$)|\s+(?:tel|phone|fax|e-?mail|copyright|all|©)\b)",
+                     re.I)
+    found = {_COUNTRY_NAMES[m.group(1).lower()] for m in pat.finditer(text or "")}
+    if len(found) == 1:
+        return found.pop()
+    if len(found) == 0:
+        labels = _host(domain).split(".")
+        if len(labels) >= 2 and labels[-1] in _CC_TLD:
+            return _CC_TLD[labels[-1]]
+    return ""
+
+
+def _host(url_or_domain: str) -> str:
+    d = (url_or_domain or "").split("://")[-1].split("/")[0].lower().strip()
+    return d[4:] if d.startswith("www.") else d
+
+
+def is_personal_domain(domain: str) -> bool:
+    return _host(domain) in FREE_MAIL
+
+
+def company_info(email: str, company: str = "", website: str = "") -> tuple[str, str]:
+    """(company, website) for a lead, '' where there is no real company information.
+
+    A personal email domain is never a company: the website is dropped, and a company
+    field that only repeats the mail provider ("Gmail", "gmx", "icloud.com") is blanked.
+    A real company name from the lead sheet is kept even when the email is personal.
+    With a company email domain and no company name, the domain's label is the name.
+    """
+    email_dom = _host(email.split("@")[-1]) if "@" in (email or "") else ""
+    web_dom = _host(website)
+    if web_dom and web_dom in FREE_MAIL:
+        web_dom = ""
+    if not web_dom and email_dom and email_dom not in FREE_MAIL:
+        web_dom = email_dom
+    site = f"https://{web_dom}" if web_dom else ""
+
+    name = (company or "").strip()
+    if name.lower() in _NO_COMPANY:
+        name = ""
+    squashed = re.sub(r"\s+", "", name.lower())
+    if squashed in FREE_MAIL:
+        name = ""
+    elif email_dom in FREE_MAIL and squashed in {email_dom, email_dom.split(".")[0]}:
+        name = ""
+    if not name and web_dom:
+        name = web_dom.split(".")[0].title()
+    return name, site
 
 # Below this, a homepage is navigation chrome rather than a description of the business.
 # Measured: VVF's homepage is 301 chars of menu links; ImmunoACT's is 6,000 chars of
@@ -47,10 +139,10 @@ def domain_of(email: str = "", website: str = "") -> str:
     ended up profiled from its display name.
     """
     if website:
-        d = website.split("://")[-1].split("/")[0].lower()
-        return d[4:] if d.startswith("www.") else d
+        d = _host(website)
+        return "" if d in FREE_MAIL else d
     if "@" in email:
-        d = email.split("@")[-1].lower()
+        d = _host(email.split("@")[-1])
         return "" if d in FREE_MAIL else d
     return ""
 
