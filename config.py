@@ -47,6 +47,26 @@ INDUSTRY_KEYWORDS = {
     "Medical Devices": ["medical device", "diagnostic", "imaging", "implant", "wearable", "in-vitro"],
 }
 
+# ── Non-buyer names ─────────────────────────────────────────────────────────
+# Bodies that make news in a market but have no purchase order to give: a regulator
+# publishes rules, a ministry issues guidance, a court rules, a trade body lobbies, a
+# journal reports. Such a name is a legitimate signal but never a Potential Customer
+# (or Deal/Partnership, for investors and public bodies), so both the generator's
+# candidate filter (brief_builder._looks_like_seller_category) and the rendered-output
+# role check (validate_brief) share this ONE list -- two divergent copies previously
+# meant a name caught at generation time still passed validation, and vice versa.
+# Evidence-score floor: candidates whose ev_relevancy is below this are dropped from the
+# Industry / Customer / Competition shortlists whenever anything above it remains.
+MIN_EV_RELEVANCY = 0.15
+
+NON_BUYER_TERMS = (
+    "regulator", "regulatory authority", "ministry", "government", "city of",
+    "municipal", "municipality", "city council",
+    "cdsco", "dcgi", "fda", "court", "tribunal", "parliament",
+    "association", "council", "committee", "commission", "board of",
+    "department of", "task force", "research institute", "journal",
+)
+
 # ── Trigger-event taxonomy (importance weight 0..1 + detection keywords) ─────
 # A "trigger" is a live event that creates immediate demand for market research
 # (funding needs market sizing; a trial needs competitive landscaping; etc.).
@@ -84,11 +104,15 @@ GN_DEFAULT_LOCALE = ("en-US", "US", "US:en")
 # News RSS returns the headline again) and a publisher URL inside the `url=` parameter.
 BING_NEWS = "https://www.bing.com/news/search?q={q}&format=rss&setlang=en-US"
 HTTP_UA = "Mozilla/5.0 (compatible; CoherentConnect-Newsletter/1.0)"
+# Fetch real article text for the top-ranked articles (Google News summaries are just the
+# headline, so writers otherwise see a title only and invent the rest). 0 = off.
+import os as _os
+FETCH_ARTICLE_TEXT = _os.getenv("CMI_FETCH_ARTICLE_TEXT", "1") == "1"
 # Industry/market news window. 96 hours left thin leads with almost nothing (Dabew:
 # 3 eligible industry articles in 96h vs 41 in 3 months, 2026-11-23 window test,
-# session_scratch/window_test.py). Past 3 months the pool grows ~10-20% a month but
-# 100+-day-old stories start winning the top slots, so stop at three.
-LOOKBACK_HOURS = 24 * 91  # signals older than this are dropped
+# session_scratch/window_test.py). Widened to 6 months on 2026-11-23 (user decision) so
+# every bucket uses the same window; freshness() still ranks recent stories first.
+LOOKBACK_HOURS = 24 * 182  # signals older than this are dropped (6 months, same as every other bucket)
 
 # Competitor signals get a much longer window than triggers. The two are not the same
 # kind of fact: a buyer's funding round is only actionable while the money is still
@@ -115,6 +139,14 @@ TRIGGER_LOOKBACK_HOURS = 24 * 182
 # Topic news (report briefs) uses the same six months. collect_queries() used LOOKBACK_HOURS
 # (96h) for these, which left niche topics with nothing -- see collect.collect_topic().
 TOPIC_LOOKBACK_HOURS = 24 * 182
+
+# Append Google's "when:Nd" (N = the bucket's lookback in days) to every news search, so the
+# result cap fills with in-window items instead of old ones that get dropped afterwards.
+SEARCH_WHEN_OPERATOR = True
+
+# After the first search pass, search up to this many buyer companies named in headlines
+# ("<Company> to set up a plant") by name. 0 disables.
+HARVEST_BUYERS = 6
 
 # ── Target countries (compact port of the mother repo's config_countries/) ──
 # Each: Google-News locale (hl, gl, ceid) + geo-match signals used to HARD-FILTER
@@ -275,9 +307,11 @@ SCORING = {
     "w_importance": 0.35,
     # Freshness decay (hours → factor). Piecewise, mirrors mother repo's freshness_score.
     "freshness_bands": [(24, 1.00), (48, 0.85), (72, 0.65), (96, 0.45), (168, 0.25),
-                        # tail added with the 3-month window so a 2-week-old story
+                        # tail added with the wider windows so a 2-week-old story
                         # still outranks a 2-month-old one instead of both hitting the floor
-                        (24 * 14, 0.20), (24 * 30, 0.16), (24 * 60, 0.12)],
+                        (24 * 14, 0.20), (24 * 30, 0.16), (24 * 60, 0.12),
+                        # 6-month window: keep separating 2-4 month items from 4-6 month ones
+                        (24 * 120, 0.11)],
     "freshness_floor": 0.10,
     # Minimum composite for a signal to be eligible for the newsletter at all.
     "min_composite": 0.18,
@@ -313,3 +347,253 @@ LLM = {
     # Override with CMI_LLM_TIMEOUT_SECS if a slower endpoint needs more.
     "timeout_secs": 180,
 }
+
+
+# ── Local-language news (2026-11-23) ────────────────────────────────────────────
+# Every lead gets the English search PLUS a second pass on its country's main
+# local-language Google News edition (user decision: English + local for all regions,
+# no per-country exceptions). None = the local press language is English, so no
+# second pass. Editions verified to return results on 2026-11-23
+# (session_scratch/regional_sources3/probe_editions.py); Algeria and Liechtenstein
+# had no edition of their own and use the closest one in the same language (FR, CH).
+LOCAL_NEWS_EDITIONS = {
+    'Afghanistan': ('fa', 'AF', 'AF:fa'),
+    'Albania': ('sq', 'AL', 'AL:sq'),
+    'Algeria': ('fr', 'FR', 'FR:fr'),
+    'American Samoa': None,
+    'Argentina': ('es-419', 'AR', 'AR:es-419'),
+    'Australia': None,
+    'Austria': ('de', 'AT', 'AT:de'),
+    'Azerbaijan': ('az', 'AZ', 'AZ:az'),
+    'Bahamas': None,
+    'Bahrain': ('ar', 'BH', 'BH:ar'),
+    'Bangladesh': ('bn', 'BD', 'BD:bn'),
+    'Belgium': ('nl', 'BE', 'BE:nl'),
+    'Brazil': ('pt-BR', 'BR', 'BR:pt-419'),
+    'Bulgaria': ('bg', 'BG', 'BG:bg'),
+    'Canada': ('fr', 'CA', 'CA:fr'),
+    'Chile': ('es-419', 'CL', 'CL:es-419'),
+    'China': ('zh-CN', 'CN', 'CN:zh-Hans'),
+    'Colombia': ('es-419', 'CO', 'CO:es-419'),
+    'Costa Rica': ('es-419', 'CR', 'CR:es-419'),
+    'Croatia': ('hr', 'HR', 'HR:hr'),
+    'Cyprus': ('el', 'CY', 'CY:el'),
+    'Czechia': ('cs', 'CZ', 'CZ:cs'),
+    'Denmark': ('da', 'DK', 'DK:da'),
+    'Ecuador': ('es-419', 'EC', 'EC:es-419'),
+    'Egypt': ('ar', 'EG', 'EG:ar'),
+    'El Salvador': ('es-419', 'SV', 'SV:es-419'),
+    'Estonia': ('et', 'EE', 'EE:et'),
+    'Eswatini': None,
+    'Finland': ('fi', 'FI', 'FI:fi'),
+    'France': ('fr', 'FR', 'FR:fr'),
+    'Georgia': ('ka', 'GE', 'GE:ka'),
+    'Germany': ('de', 'DE', 'DE:de'),
+    'Ghana': None,
+    'Gibraltar': None,
+    'Greece': ('el', 'GR', 'GR:el'),
+    'Guernsey': None,
+    'Guinea': ('fr', 'GN', 'GN:fr'),
+    'Hong Kong': ('zh-HK', 'HK', 'HK:zh-Hant'),
+    'Hungary': ('hu', 'HU', 'HU:hu'),
+    'India': ('hi', 'IN', 'IN:hi'),
+    'Indonesia': ('id', 'ID', 'ID:id'),
+    'Iran': ('fa', 'IR', 'IR:fa'),
+    'Iraq': ('ar', 'IQ', 'IQ:ar'),
+    'Ireland': None,
+    'Israel': ('he', 'IL', 'IL:he'),
+    'Italy': ('it', 'IT', 'IT:it'),
+    'Jamaica': None,
+    'Japan': ('ja', 'JP', 'JP:ja'),
+    'Jordan': ('ar', 'JO', 'JO:ar'),
+    'Kazakhstan': ('ru', 'KZ', 'KZ:ru'),
+    'Kenya': None,
+    'Kuwait': ('ar', 'KW', 'KW:ar'),
+    'Latvia': ('lv', 'LV', 'LV:lv'),
+    'Lebanon': ('ar', 'LB', 'LB:ar'),
+    'Liechtenstein': ('de', 'CH', 'CH:de'),
+    'Lithuania': ('lt', 'LT', 'LT:lt'),
+    'Luxembourg': ('fr', 'LU', 'LU:fr'),
+    'Madagascar': ('fr', 'MG', 'MG:fr'),
+    'Malawi': None,
+    'Malaysia': ('ms', 'MY', 'MY:ms'),
+    'Maldives': ('dv', 'MV', 'MV:dv'),
+    'Malta': None,
+    'Mauritius': ('fr', 'MU', 'MU:fr'),
+    'Mexico': ('es-419', 'MX', 'MX:es-419'),
+    'Moldova': ('ro', 'MD', 'MD:ro'),
+    'Morocco': ('fr', 'MA', 'MA:fr'),
+    'Namibia': None,
+    'Nepal': ('ne', 'NP', 'NP:ne'),
+    'Netherlands': ('nl', 'NL', 'NL:nl'),
+    'New Zealand': None,
+    'Nicaragua': ('es-419', 'NI', 'NI:es-419'),
+    'Nigeria': None,
+    'North Macedonia': ('mk', 'MK', 'MK:mk'),
+    'Norway': ('no', 'NO', 'NO:no'),
+    'Oman': ('ar', 'OM', 'OM:ar'),
+    'Panama': ('es-419', 'PA', 'PA:es-419'),
+    'Peru': ('es-419', 'PE', 'PE:es-419'),
+    'Philippines': None,
+    'Poland': ('pl', 'PL', 'PL:pl'),
+    'Portugal': ('pt-PT', 'PT', 'PT:pt-150'),
+    'Puerto Rico': ('es-419', 'PR', 'PR:es-419'),
+    'Qatar': ('ar', 'QA', 'QA:ar'),
+    'Romania': ('ro', 'RO', 'RO:ro'),
+    'Russia': ('ru', 'RU', 'RU:ru'),
+    'Rwanda': None,
+    'Saudi Arabia': ('ar', 'SA', 'SA:ar'),
+    'Serbia': ('sr', 'RS', 'RS:sr'),
+    'Singapore': None,
+    'Slovakia': ('sk', 'SK', 'SK:sk'),
+    'Slovenia': ('sl', 'SI', 'SI:sl'),
+    'South Africa': None,
+    'South Korea': ('ko', 'KR', 'KR:ko'),
+    'Spain': ('es', 'ES', 'ES:es'),
+    'Sweden': ('sv', 'SE', 'SE:sv'),
+    'Switzerland': ('de', 'CH', 'CH:de'),
+    'Taiwan': ('zh-TW', 'TW', 'TW:zh-Hant'),
+    'Tanzania': ('sw', 'TZ', 'TZ:sw'),
+    'Thailand': ('th', 'TH', 'TH:th'),
+    'Trinidad and Tobago': None,
+    'Turkey': ('tr', 'TR', 'TR:tr'),
+    'Uganda': None,
+    'Ukraine': ('uk', 'UA', 'UA:uk'),
+    'United Arab Emirates': ('ar', 'AE', 'AE:ar'),
+    'United Kingdom': None,
+    'United States': None,
+    'Uruguay': ('es-419', 'UY', 'UY:es-419'),
+    'Uzbekistan': ('uz', 'UZ', 'UZ:uz'),
+    'Venezuela': ('es-419', 'VE', 'VE:es-419'),
+    'Vietnam': ('vi', 'VN', 'VN:vi'),
+    'Yemen': ('ar', 'YE', 'YE:ar'),
+    'Zambia': None,
+    'Zimbabwe': None,
+}
+
+LOCAL_LANGUAGE_NAMES = {
+    'Afghanistan': 'Persian',
+    'Albania': 'Albanian',
+    'Algeria': 'French',
+    'American Samoa': 'English',
+    'Argentina': 'Spanish',
+    'Australia': 'English',
+    'Austria': 'German',
+    'Azerbaijan': 'Azerbaijani',
+    'Bahamas': 'English',
+    'Bahrain': 'Arabic',
+    'Bangladesh': 'Bengali',
+    'Belgium': 'Dutch',
+    'Brazil': 'Portuguese',
+    'Bulgaria': 'Bulgarian',
+    'Canada': 'French',
+    'Chile': 'Spanish',
+    'China': 'Chinese',
+    'Colombia': 'Spanish',
+    'Costa Rica': 'Spanish',
+    'Croatia': 'Croatian',
+    'Cyprus': 'Greek',
+    'Czechia': 'Czech',
+    'Denmark': 'Danish',
+    'Ecuador': 'Spanish',
+    'Egypt': 'Arabic',
+    'El Salvador': 'Spanish',
+    'Estonia': 'Estonian',
+    'Eswatini': 'English',
+    'Finland': 'Finnish',
+    'France': 'French',
+    'Georgia': 'Georgian',
+    'Germany': 'German',
+    'Ghana': 'English',
+    'Gibraltar': 'English',
+    'Greece': 'Greek',
+    'Guernsey': 'English',
+    'Guinea': 'French',
+    'Hong Kong': 'Chinese',
+    'Hungary': 'Hungarian',
+    'India': 'Hindi',
+    'Indonesia': 'Indonesian',
+    'Iran': 'Persian',
+    'Iraq': 'Arabic',
+    'Ireland': 'English',
+    'Israel': 'Hebrew',
+    'Italy': 'Italian',
+    'Jamaica': 'English',
+    'Japan': 'Japanese',
+    'Jordan': 'Arabic',
+    'Kazakhstan': 'Russian',
+    'Kenya': 'English',
+    'Kuwait': 'Arabic',
+    'Latvia': 'Latvian',
+    'Lebanon': 'Arabic',
+    'Liechtenstein': 'German',
+    'Lithuania': 'Lithuanian',
+    'Luxembourg': 'French',
+    'Madagascar': 'French',
+    'Malawi': 'English',
+    'Malaysia': 'Malay',
+    'Maldives': 'Dhivehi',
+    'Malta': 'English',
+    'Mauritius': 'French',
+    'Mexico': 'Spanish',
+    'Moldova': 'Romanian',
+    'Morocco': 'French',
+    'Namibia': 'English',
+    'Nepal': 'Nepali',
+    'Netherlands': 'Dutch',
+    'New Zealand': 'English',
+    'Nicaragua': 'Spanish',
+    'Nigeria': 'English',
+    'North Macedonia': 'Macedonian',
+    'Norway': 'Norwegian',
+    'Oman': 'Arabic',
+    'Panama': 'Spanish',
+    'Peru': 'Spanish',
+    'Philippines': 'English',
+    'Poland': 'Polish',
+    'Portugal': 'Portuguese',
+    'Puerto Rico': 'Spanish',
+    'Qatar': 'Arabic',
+    'Romania': 'Romanian',
+    'Russia': 'Russian',
+    'Rwanda': 'English',
+    'Saudi Arabia': 'Arabic',
+    'Serbia': 'Serbian',
+    'Singapore': 'English',
+    'Slovakia': 'Slovak',
+    'Slovenia': 'Slovenian',
+    'South Africa': 'English',
+    'South Korea': 'Korean',
+    'Spain': 'Spanish',
+    'Sweden': 'Swedish',
+    'Switzerland': 'German',
+    'Taiwan': 'Chinese',
+    'Tanzania': 'Swahili',
+    'Thailand': 'Thai',
+    'Trinidad and Tobago': 'English',
+    'Turkey': 'Turkish',
+    'Uganda': 'English',
+    'Ukraine': 'Ukrainian',
+    'United Arab Emirates': 'Arabic',
+    'United Kingdom': 'English',
+    'United States': 'English',
+    'Uruguay': 'Spanish',
+    'Uzbekistan': 'Uzbek',
+    'Venezuela': 'Spanish',
+    'Vietnam': 'Vietnamese',
+    'Yemen': 'Arabic',
+    'Zambia': 'English',
+    'Zimbabwe': 'English',
+}
+
+# Sources dropped from the evidence pool: research-firm SEO "market report" pages,
+# press-release farms and stock-ticker aggregators (seen flooding local-language and
+# topic results in the 2026-11 regional experiments). Lowercase substrings matched
+# against the article's source name / URL. Trade-off: genuine company press releases
+# also travel over these wires and are lost with them.
+SOURCE_BLOCKLIST = sorted(set([s.lower() for s in RESEARCH_FIRM_SOURCES] + [
+    "indexbox", "spherical insights", "straits research", "fortune business insights",
+    "newscast.jp", "atpress", "@press", "dreamnews", "wiseguy", "marketbeat", "stocktitan",
+    "simply wall st", "simplywall.st", "zacks", "证券之星", "东方财富", "stock titan",
+    "der aktionär", "der aktionaer", "boerse express", "börse express",
+]))

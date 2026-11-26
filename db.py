@@ -127,6 +127,38 @@ def init_db(conn: sqlite3.Connection) -> None:
         expires_at    TEXT       -- refresh after N days rather than never
     );
 
+    -- The inferred seller profile, built once per (domain, market) and reused across
+    -- briefs/runs so a lead's signal and report briefs describe the same business.
+    CREATE TABLE IF NOT EXISTS profile_cache (
+        domain       TEXT NOT NULL,
+        market       TEXT NOT NULL,
+        profile_json TEXT,
+        created_at   TEXT NOT NULL,
+        expires_at   TEXT,
+        PRIMARY KEY (domain, market)
+    );
+
+    -- Is a rival active in a country? Result of a news search for "<rival> <country>"
+    -- over the last 12 months; refreshed after 90 days (see get_rival_presence).
+    CREATE TABLE IF NOT EXISTS rival_presence (
+        rival      TEXT NOT NULL,
+        country    TEXT NOT NULL,
+        active     INTEGER NOT NULL,
+        hits       INTEGER NOT NULL DEFAULT 0,
+        checked_at TEXT NOT NULL,
+        PRIMARY KEY (rival, country)
+    );
+
+    -- Which country a news outlet belongs to, learned from collected articles
+    -- (see source_country.py). n = articles seen, share = fraction naming iso2.
+    CREATE TABLE IF NOT EXISTS source_country (
+        source     TEXT PRIMARY KEY,
+        iso2       TEXT NOT NULL,
+        n          INTEGER NOT NULL,
+        share      REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
     -- Every generated brief, whether or not it was sent. Holding the HTML means a
     -- re-send never regenerates, and a validation verdict stays attached to the exact
     -- document it judged.
@@ -420,6 +452,107 @@ def put_intel(conn: sqlite3.Connection, *, domain: str, company: str = "",
     conn.commit()
 
 
+# ── profile_cache ─────────────────────────────────────────────────────────────
+def get_profile_cache(conn: sqlite3.Connection, domain: str, market: str) -> dict | None:
+    """Cached Profile dict for (domain, market), or None when absent/expired/unreadable.
+    A table that doesn't exist yet (DB not migrated) is a miss, not an error."""
+    if not domain:
+        return None
+    try:
+        row = conn.execute("SELECT * FROM profile_cache WHERE domain = ? AND market = ?",
+                           (domain.lower(), (market or "Global").lower())).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    exp = row["expires_at"]
+    if exp and exp < _now():
+        return None
+    try:
+        d = json.loads(row["profile_json"] or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return d if isinstance(d, dict) and d else None
+
+
+def put_profile_cache(conn: sqlite3.Connection, domain: str, market: str, profile: dict,
+                      ttl_days: int = 30) -> None:
+    if not domain:
+        return
+    now = datetime.now(timezone.utc)
+    conn.execute(
+        """INSERT INTO profile_cache (domain, market, profile_json, created_at, expires_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(domain, market) DO UPDATE SET
+             profile_json=excluded.profile_json, created_at=excluded.created_at,
+             expires_at=excluded.expires_at""",
+        (domain.lower(), (market or "Global").lower(),
+         json.dumps(profile, ensure_ascii=False), now.isoformat(),
+         (now + timedelta(days=ttl_days)).isoformat()))
+    conn.commit()
+
+
+# ── rival_presence ────────────────────────────────────────────────────────────
+RIVAL_PRESENCE_TTL_DAYS = 90
+
+
+def get_rival_presence(conn: sqlite3.Connection, rival: str, country: str) -> dict | None:
+    """{"active": bool, "hits": int, "checked_at": str} for (rival, country), or None when
+    absent / older than RIVAL_PRESENCE_TTL_DAYS / the table does not exist yet."""
+    if not rival or not country:
+        return None
+    try:
+        row = conn.execute("SELECT * FROM rival_presence WHERE rival = ? AND country = ?",
+                           (rival.lower(), country.upper())).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=RIVAL_PRESENCE_TTL_DAYS)).isoformat()
+    if (row["checked_at"] or "") < cutoff:
+        return None
+    return {"active": bool(row["active"]), "hits": int(row["hits"] or 0),
+            "checked_at": row["checked_at"]}
+
+
+def put_rival_presence(conn: sqlite3.Connection, rival: str, country: str,
+                       active: bool, hits: int) -> None:
+    if not rival or not country:
+        return
+    conn.execute(
+        """INSERT INTO rival_presence (rival, country, active, hits, checked_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(rival, country) DO UPDATE SET
+             active=excluded.active, hits=excluded.hits, checked_at=excluded.checked_at""",
+        (rival.lower(), country.upper(), 1 if active else 0, int(hits), _now()))
+    conn.commit()
+
+
+# ── source_country ────────────────────────────────────────────────────────────
+def get_source_countries(conn: sqlite3.Connection) -> dict[str, dict]:
+    """{source_lower: {"iso2", "n", "share"}} for every learned outlet ({} on any error)."""
+    try:
+        rows = conn.execute("SELECT source, iso2, n, share FROM source_country").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {r["source"]: {"iso2": r["iso2"], "n": int(r["n"]), "share": float(r["share"])}
+            for r in rows}
+
+
+def put_source_country(conn: sqlite3.Connection, source: str, iso2: str,
+                       n: int, share: float) -> None:
+    if not source or not iso2:
+        return
+    conn.execute(
+        """INSERT INTO source_country (source, iso2, n, share, updated_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(source) DO UPDATE SET
+             iso2=excluded.iso2, n=excluded.n, share=excluded.share,
+             updated_at=excluded.updated_at""",
+        (source.lower(), iso2.upper(), int(n), float(share), _now()))
+    conn.commit()
+
+
 def stale_domains(conn: sqlite3.Connection, domains: list[str]) -> list[str]:
     """Which of these domains have no usable cached intel. The enrichment stage only
     needs to work on these."""
@@ -587,8 +720,11 @@ def brief_subject(company: str, kind: str = "", topic: str = "") -> str:
     A report brief names the market the lead enquired about: "FamPay's Brief" throws
     away the single most relevant word in the email.
     """
-    company = (company or "Your Company").strip()
     topic = (topic or "").strip()
     if kind == "report" and topic:
-        return f"Coherent Market Insights · {company} · {topic}"
+        # A lead with no company information gets a market-only report brief.
+        if not (company or "").strip() or company.strip().lower() == topic.lower():
+            return f"Coherent Market Insights · {topic}"
+        return f"Coherent Market Insights · {company.strip()} · {topic}"
+    company = (company or "Your Company").strip()
     return f"Coherent Market Insights · {company}'s Brief"
