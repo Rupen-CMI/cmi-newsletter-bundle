@@ -16,7 +16,7 @@ pkill -9 -f vllm.entrypoints 2>/dev/null; sleep 3
 nohup python -m vllm.entrypoints.openai.api_server \
   --model /home/merged \
   --served-model-name cmi-7b \
-  --max-model-len 4096 \
+  --max-model-len 16384 \
   --gpu-memory-utilization 0.94 \
   --max-num-seqs 64 \
   --enable-prefix-caching \

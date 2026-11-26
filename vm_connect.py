@@ -28,13 +28,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 
 INSTANCE_NAME = os.getenv("CMI_VM_NAME", "cmi-serve-v1")
 MODEL_NAME = os.getenv("LOCAL_LLM_MODEL", "cmi-7b")
-SERVE_PORT = "6006"
+SERVE_PORT = os.getenv("CMI_SERVE_PORT", "6006")
 BOOT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ops", "boot_serve.sh")
 
@@ -209,6 +210,26 @@ def status() -> dict:
 
 
 # ── healing ───────────────────────────────────────────────────────────────────
+def running_servers(machine_id: int) -> list[dict] | None:
+    """Model servers already running on the VM, as [{"model", "port", "cmd"}], or None
+    when commands cannot be run there at all (e.g. the SSH key is not accepted)."""
+    code, out = _jl(["exec", str(machine_id), "--", "bash", "-lc",
+                     "echo __ps__; ps -eo args | grep -E 'vllm|api_server' | grep -v grep"],
+                    timeout=120)
+    if "__ps__" not in out:
+        return None
+    servers = []
+    for line in out.split("__ps__", 1)[1].splitlines():
+        line = line.strip()
+        if "vllm" not in line or ("serve" not in line and "api_server" not in line):
+            continue
+        port = re.search(r"--port[ =](\d+)", line)
+        model = re.search(r"--served-model-name[ =](\S+)", line)
+        servers.append({"model": model.group(1) if model else "",
+                        "port": port.group(1) if port else "8000", "cmd": line[:200]})
+    return servers
+
+
 def _boot(machine_id: int) -> None:
     """Upload and run the boot script inside tmux.
 
@@ -276,8 +297,30 @@ def ensure(*, spot: bool = False, wait_secs: int = 900, log=_log) -> dict:
             return st
         log(f"  running as {mid}")
 
-    log("  booting server (install if needed, then serve in tmux)...")
-    _boot(mid)
+    servers = running_servers(mid)
+    if servers is None:
+        st = status()
+        st["error"] = ("cannot run commands on the VM (jl exec failed) -- check that this "
+                       "machine's SSH key is registered (jl ssh-key list) and mapped to the "
+                       "VM's host in ~/.ssh/config")
+        log("  " + st["error"])
+        return st
+    expected = [s for s in servers if s["port"] == SERVE_PORT and s["model"] == MODEL_NAME]
+    if servers and not expected:
+        # Booting would start a second engine on the same GPU and fail or evict this one.
+        st = status()
+        st["error"] = ("a model server is already running on the VM: "
+                       + "; ".join(f"{s['model'] or '?'} on port {s['port']}" for s in servers)
+                       + f" (expected {MODEL_NAME} on port {SERVE_PORT}). Not starting a "
+                       "second one: set LOCAL_LLM_MODEL / CMI_SERVE_PORT to match it, or "
+                       "stop it first.")
+        log("  " + st["error"])
+        return st
+    if expected:
+        log(f"  {MODEL_NAME} is already running on port {SERVE_PORT}; waiting for it")
+    else:
+        log("  booting server (install if needed, then serve in tmux)...")
+        _boot(mid)
 
     deadline = time.time() + wait_secs
     while time.time() < deadline:

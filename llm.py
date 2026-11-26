@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 
 from openai import OpenAI
@@ -228,13 +229,55 @@ def _log_token_usage(usage) -> None:
         pass
 
 
-def _call(client, model, messages, json_mode, temperature, max_tokens):
+def _local_stream_on() -> bool:
+    return (os.environ.get("LOCAL_LLM_STREAM") or _key("LOCAL_LLM_STREAM") or "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _is_transient(e: Exception) -> bool:
+    """Cloudflare/proxy hiccups (520/522/524) and dropped connections."""
+    code = getattr(e, "status_code", None)
+    if code in (520, 522, 524):
+        return True
+    s = f"{type(e).__name__} {e}".lower()
+    return any(t in s for t in ("520", "522", "524", "connection reset", "connectionerror",
+                                "apiconnectionerror", "remoteprotocolerror"))
+
+
+def _call_once(client, model, messages, json_mode, temperature, max_tokens, stream=False):
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if stream:
+        # Streaming keeps bytes flowing so Cloudflare's ~100s idle cut-off never fires;
+        # the client timeout then acts as a per-chunk idle/read timeout.
+        parts, usage = [], None
+        for chunk in client.chat.completions.create(
+                stream=True, stream_options={"include_usage": True}, **kwargs):
+            if getattr(chunk, "usage", None) is not None:
+                usage = chunk.usage
+            for ch in (getattr(chunk, "choices", None) or []):
+                delta = getattr(ch, "delta", None)
+                piece = getattr(delta, "content", None) if delta is not None else None
+                if piece:
+                    parts.append(piece)
+        _log_token_usage(usage)
+        return "".join(parts)
     r = client.chat.completions.create(**kwargs)
     _log_token_usage(getattr(r, "usage", None))
     return r.choices[0].message.content or ""
+
+
+def _call(client, model, messages, json_mode, temperature, max_tokens):
+    stream = client is _local_client and _local_stream_on()
+    attempts = 3 if client is _local_client else 1   # up to 2 retries on transient proxy errors
+    for i in range(attempts):
+        try:
+            return _call_once(client, model, messages, json_mode, temperature, max_tokens, stream)
+        except Exception as e:  # noqa: BLE001
+            if i + 1 >= attempts or not _is_transient(e):
+                raise
+            time.sleep(2 * (i + 1))
 
 
 def chat(system: str, user: str, *, json_mode: bool = False,
