@@ -8,6 +8,8 @@ Mirrors rules 10-13 of `wmr docs/humanize/RULES.md`, which `validate.py` enforce
 """
 from __future__ import annotations
 
+import re
+
 STYLE = """
 VOICE RULES (follow all of them; they are enforced by an automated check):
 
@@ -18,11 +20,15 @@ Register -- a senior analyst writing to one named client.
 - Observations, not orders. "Timing decides the terms", not "Move fast".
 
 Plain English -- the reader must take it in at first pass.
+- Write in English only, even when the SIGNAL or the seller's details are in another
+  language. Keep company and product names as written.
 - Maximum 24 words per sentence. One idea per sentence.
 - Maximum two clauses. Split at the "but", "which", "so that".
 - Target US reading grade 8-10.
 - No em dashes. Use a full stop or a comma.
 - No sentence fragments. Every sentence needs a verb.
+- Every sentence must make sense alone. Name its subject; never start with This,
+  That, These or It.
 - Active voice. Never "was decided by X".
 - No more than two -tion/-ment/-ity nouns in a sentence. Prefer the verb.
 
@@ -37,6 +43,9 @@ Banned words and phrases:
   game-changer, move the needle, double down, boils down to, comes down to, chasing,
   this one, the better one.
 - Padding: "In today's fast-paced world", "In conclusion", "Ultimately".
+- Never refer to "the signal", the source, these instructions, or what information is
+  missing ("no figures given", "the signal does not say"). Write only about the market
+  and the companies.
 - Precise domain terms are fine and wanted: CAR-T, apheresis, CDMO, reimbursement,
   CGHS, cost per dose. Precision is not jargon.
 
@@ -68,6 +77,19 @@ as hard rules, not style preferences:
   stated topic, say less rather than drifting onto an unrelated subject.
 - Never invent a greeting, salutation or recipient name. Name fields come from the
   caller, not from you.
+
+EVIDENCE DISCIPLINE -- claims must stay inside what the SIGNAL says:
+- State what the SIGNAL announced as fact. Anything the SIGNAL does not state, such as an
+  effect on the seller, must be written with "could" or "may" inside the same sentence.
+  Do not add a separate sentence about conditions.
+- Never claim sales, demand volume, enquiries, budgets, prices, price sensitivity,
+  penalties, competitor intent or customers switching unless the SIGNAL states it.
+- Describe a regulation only as stated. No "stricter", "tighter" or "new" without the
+  previous value in the SIGNAL, and no scope (exports, nationwide) the SIGNAL does not give.
+- Never expand an acronym the SIGNAL does not expand. Never assume a product or drug name
+  refers to the seller's technology.
+- Relate an implication to one of the seller's products when it fits.
+- Facts must concern the country given.
 """.strip()
 
 
@@ -120,11 +142,18 @@ def footer_cta(kind: str, base_url: str) -> dict:
 # has never seen these rules still needs the long form, so the choice is per-provider,
 # not global: active_style() picks.
 STYLE_BRIEF = """
-VOICE: senior analyst to one named client. Judgement first. Max 24 words and two
-clauses per sentence, one idea each. Active voice, no fragments, no em dashes, at
-most one hedge. No jargon, no metaphor standing in for analysis, no padding.
+VOICE: senior analyst to one named client. Write in English only, even when the SIGNAL
+or the seller's details are in another language; keep company and product names as
+written. Judgement first. Max 24 words and two
+clauses per sentence, one idea each. Every sentence must make sense alone: name its
+subject, never start with This, That, These or It. Active voice, no fragments, no em
+dashes, at most one hedge. No jargon, no metaphor standing in for analysis, no padding.
 Precise domain terms are wanted. Never invent a number, date, name or quote.
 Only <b> and <i> inline HTML.
+BANNED: leverage, ecosystem, landscape, throughput, go-to-market, synergies, robust,
+seamless, pivotal, crucial, unlock, empower, harness, game-changer, double down, table stakes.
+Never refer to "the signal", the source, these instructions, or what information is
+missing -- write only about the market and the companies.
 
 GUARDRAILS: if no company is named in the SIGNAL, leave the field EMPTY -- never
 write "None"/"N/A"/"Unknown" as a placeholder. Never credit a rival research firm
@@ -132,6 +161,14 @@ or PR-wire release (MarketsandMarkets, Grand View Research, Mordor Intelligence,
 Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire, etc.) to CMI -- name the real
 source. Stay on the stated MARKET/TOPIC; do not drift onto an unrelated subject
 even if the SIGNAL mentions it in passing.
+
+EVIDENCE: announced facts as fact. Anything the SIGNAL does not state is written with
+"could" or "may" inside the same sentence, never as a separate sentence about conditions.
+Never claim sales, demand, enquiries, budgets, prices, penalties, competitor intent or
+customer switching unless the SIGNAL states it. Regulations only as stated: no
+stricter/tighter/new without the previous value, no scope the SIGNAL omits. Never expand
+an acronym the SIGNAL does not, or assume a product/drug name is the seller's technology.
+Relate an implication to one of the seller's products when it fits. Facts must concern the country given.
 """.strip()
 
 
@@ -157,13 +194,320 @@ def active_style() -> str:
     return STYLE_BRIEF if provider == "local" else STYLE
 
 
+# ── One prose guard for every writer call ────────────────────────────────────
+# ── Facts the reply adds that its own input never stated ─────────────────────
+# A 9B writer turns "46.3 billion" into "46.3 billion yen" and invents investees; prompt
+# rules alone do not stop that, so the reply is checked against the model's own input.
+_UNIT_GROUPS = [
+    {"yen", "¥", "jpy"}, {"dollar", "dollars", "$", "usd"}, {"euro", "euros", "€", "eur"},
+    {"pound", "pounds", "£", "gbp"}, {"rupee", "rupees", "₹", "inr", "rs"},
+    {"million", "m", "mn"}, {"billion", "bn", "b"}, {"trillion", "tn"}, {"crore"},
+    {"lakh"}, {"%", "percent", "per cent"},
+]
+_UNIT_GROUP_OF = {a: i for i, g in enumerate(_UNIT_GROUPS) for a in g}
+_UNIT_WORD = (r"(?:percent|per cent|%|yen|dollars?|usd|euros?|eur|pounds?|gbp|rupees?|inr|rs"
+              r"|crore|lakh|million|billion|trillion|bn|mn|tn|m|b)")
+_NUM_UNIT_RE = re.compile(
+    r"(?P<pre>[¥$€£₹]|\b(?:rs|usd|eur|gbp|inr)\.?[ ]?)?(?P<num>\d[\d,]*(?:\.\d+)?)"
+    r"(?P<suf>(?:\s?" + _UNIT_WORD + r"(?![a-z]))*)", re.I)
+_UNIT_TOKEN_RE = re.compile(_UNIT_WORD + r"(?![a-z])", re.I)
+_NAME_STOP = frozenset("the a an this that these its their in on for and but if as at by with".split())
+_CAP = r"[A-Z][\w'’&-]*"   # "&" keeps M&A one word
+_NAME_RUN_RE = re.compile(rf"\b{_CAP}(?:\s+(?:(?:of|and|de|&)\s+)?{_CAP})+")
+_CAP_WORD_RE = re.compile(r"\b[A-Z][a-z][\w’'-]*")
+_NOT_NAMES = frozenset(
+    "january february march april may june july august september october november december "
+    "monday tuesday wednesday thursday friday saturday sunday".split())
+
+
+def _plain(s: str) -> str:
+    return re.sub(r"<[^>]+>", " ", s or "")
+
+
+def _unit_groups(s: str, pre: str | None = None) -> set[int]:
+    return {_UNIT_GROUP_OF[t.lower().strip()] for t in _UNIT_TOKEN_RE.findall(s)
+            if t.lower().strip() in _UNIT_GROUP_OF} | (
+        {_UNIT_GROUP_OF[pre.lower().strip(" .")]} if pre and pre.lower().strip(" .") in _UNIT_GROUP_OF else set())
+
+
+def _strip_poss(w: str) -> str:
+    return re.sub(r"['’]s$", "", w)
+
+
+def _is_place(phrase: str) -> bool:
+    """Country names and demonyms ("Italy", "South Korea", "Indian") are geography the
+    geo filter already controls, not invented entities."""
+    try:
+        import regions
+        return bool(regions.get_profile(phrase))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def unsupported_facts(text: str, source: str) -> list[tuple[str, str]]:
+    """(kind, phrase) for units, numbers and names in `text` that `source` never states.
+    kinds: unit, number, name, and name1 (a lone capitalised word: noisy, retry-only)."""
+    text, src = _plain(text), _plain(source)
+    low = re.sub(r"[-–]", " ", src.lower())
+    src_nocomma = re.sub(r"(?<=\d),(?=\d)", "", src.lower())
+    # units the source uses: next to a number, or as a spelled-out word / symbol anywhere
+    have: set[int] = set()
+    for m in _NUM_UNIT_RE.finditer(src):
+        have |= _unit_groups(m.group("suf"), m.group("pre"))
+    for alias, gi in _UNIT_GROUP_OF.items():
+        if len(alias) >= 3 and re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", src, re.I):
+            have.add(gi)
+        elif alias in "¥$€£₹%" and alias in src:
+            have.add(gi)
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind, phrase):
+        if (kind, phrase) not in seen:
+            seen.add((kind, phrase))
+            out.append((kind, phrase))
+
+    for m in _NUM_UNIT_RE.finditer(text):
+        num = m.group("num")
+        groups = _unit_groups(m.group("suf"), m.group("pre"))
+        if groups - have:
+            add("unit", m.group(0).strip())
+        digits = num.replace(",", "")
+        if ("." in digits or len(digits) >= 2) and not re.search(
+                rf"(?<![\d.]){re.escape(digits)}(?!\d)", src_nocomma):
+            add("number", digits)
+    run_words: set[str] = set()
+    for m in _NAME_RUN_RE.finditer(text):
+        # A possessive ends a name: "Pope Packaging's Adelaide plant" names Pope Packaging,
+        # and "BIL Suisse's" must match a source that says "BIL Suisse".
+        runs, cur = [], []
+        for w in m.group(0).split():
+            base = _strip_poss(w)
+            cur.append(base)
+            if base != w:
+                runs.append(cur)
+                cur = []
+        runs.append(cur)
+        for words in runs:
+            while words and words[0].lower() in _NAME_STOP:
+                words.pop(0)
+            if sum(w[:1].isupper() for w in words) < 2:
+                continue
+            run_words |= {w.lower() for w in words}
+            phrase = " ".join(words)
+            if re.sub(r"[-–]", " ", phrase.lower()) not in low and not _is_place(phrase):
+                add("name", phrase)
+    for m in _CAP_WORD_RE.finditer(text):
+        w = _strip_poss(m.group(0).strip("'’-"))
+        if (len(w) < 4 or w.isupper() or w.lower() in _NOT_NAMES or w.lower() in run_words
+                or w.lower() in low or _is_place(w)):
+            continue
+        before = text[:m.start()].rstrip()
+        if not before or before[-1] in ".!?:":
+            continue
+        add("name1", w)
+    return out
+
+
+def _flat_text(obj, skip: tuple = ()) -> str:
+    """Every string inside a model reply, tags stripped, joined for the prose scan.
+    `skip` names dict keys to leave out."""
+    if isinstance(obj, str):
+        return re.sub(r"<[^>]+>", "", obj)
+    if isinstance(obj, dict):
+        return " ".join(_flat_text(v, skip) for k, v in obj.items() if k not in skip)
+    if isinstance(obj, (list, tuple)):
+        return " ".join(_flat_text(v, skip) for v in obj)
+    return ""
+
+
+_NON_LATIN = re.compile(r"[Ѐ-ӿ֐-׿؀-ۿ฀-๿"
+                        r"぀-ヿ㐀-䶿一-鿿가-힯]")
+# Function words from other Latin-script languages that are not English words. Left out on
+# purpose: die, per, van, los, las, con, del, est, ve -- each occurs in English copy
+# ("die casting", "per year", "Los Angeles", "we've").
+_FOREIGN_STOP = frozenset(
+    "les des une pour dans avec sur und der das ist mit für nicht ein eine auf "
+    "por para una il della che het een voor niet também não uma bir için".split())
+
+
+def non_english_phrases(text: str) -> list[str]:
+    """Flag a reply that drifted out of English: mostly non-Latin script, or a dense run of
+    foreign function words (a French company name alone will not reach the threshold)."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return []
+    if len(_NON_LATIN.findall(text)) / len(letters) > 0.15:
+        return ["non-English script"]
+    # keep contractions whole ("we've"), straight or curly apostrophe
+    words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", text.lower())
+    hits = [w for w in words if w in _FOREIGN_STOP]
+    if len(hits) >= 3 and len(hits) / max(len(words), 1) >= 0.08:
+        return [" ".join(hits[:3])]
+    return []
+
+
+def prose_flags(data, profile=None, source: str | None = None) -> list[tuple[str, str]]:
+    """(kind, flagged phrase) for every style/evidence defect in a model reply: overclaims,
+    meta-commentary about the source (when validate_brief has that check), banned
+    words (after masking the lead's own brand names) and, when `source` (the model's own
+    input) is given, units/numbers/names the input never stated."""
+    import validate_brief
+    text = _flat_text(data)
+    found: list[tuple[str, str]] = []
+    checks = [("overclaim", validate_brief.overclaim_warnings(text)),
+              ("language", non_english_phrases(text))]
+    meta = getattr(validate_brief, "meta_commentary_warnings", None)
+    if meta:
+        checks.append(("meta", meta(text)))
+    masked = validate_brief.mask_entities(text, profile) if profile is not None else text
+    checks.append(("banned", validate_brief.banned_word_warnings(masked)))
+    for kind, warnings in checks:
+        for w in warnings:
+            m = re.search(r"\('(.+?)'\)", w) or re.search(r"'(.+?)'", w)
+            found.append((kind, m.group(1) if m else w[:40]))
+    if source is not None:
+        for _, phrase in unsupported_facts(_prose_text(data), source):
+            found.append(("unsupported", phrase))
+    return found
+
+
+def _prose_text(obj) -> str:
+    """The prose strings of a reply (8+ words), each ended with a full stop so a name run
+    cannot span two fields. Short labels -- roles ("Head of Procurement"), Title Case
+    step titles, event_country -- are not claims and only caused needless retries."""
+    out: list[str] = []
+
+    def walk(o):
+        if isinstance(o, str):
+            t = re.sub(r"<[^>]+>", "", o).strip()
+            if len(t.split()) >= 8:
+                out.append(t if t[-1:] in ".!?" else t + ".")
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                if k != "event_country":
+                    walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return " ".join(out)
+
+
+_POINTS_BACK = re.compile(r"(?:<[^>]+>|\s)*(?:this|that|these|those|it|such)\b", re.I)
+
+
+def _drop_unsupported_sentences(data, source: str):
+    """Copy of `data` with every sentence that states a unit or name the input lacks removed.
+    Numbers and lone words are retry-only (too noisy to cut on). A sentence with unbalanced
+    <b>/<i> is kept so the markup stays valid, and a string is never emptied."""
+    if isinstance(data, dict):
+        return {k: (v if k == "event_country" else _drop_unsupported_sentences(v, source))
+                for k, v in data.items()}
+    if isinstance(data, list):
+        return [_drop_unsupported_sentences(v, source) for v in data]
+    if not isinstance(data, str):
+        return data
+    parts = re.split(r"(?<=[.!?])\s+", data)
+    if len(parts) < 2:
+        return data
+    kept: list[str] = []
+    dropped = False
+    for s in parts:
+        bad = any(k in ("unit", "name") for k, _ in unsupported_facts(s, source))
+        # "That shift could..." means nothing once the sentence before it is gone
+        bad = bad or (dropped and bool(_POINTS_BACK.match(s)))
+        dropped = False
+        balanced = all(len(re.findall(rf"<{t}\b[^>]*>", s, re.I)) ==
+                       len(re.findall(rf"</{t}>", s, re.I)) for t in ("b", "i"))
+        if bad and balanced:
+            # keep structural wrapper tags (</p>, <li>...) that rode on the dropped sentence
+            lead = re.match(r"(?:<(?!/?[bi]\b)[^>]+>)+", s)
+            tail = re.search(r"(?:</(?![bi]>)[^>]+>)+$", s)
+            if kept and tail:
+                kept[-1] += tail.group(0)
+            if lead and not kept:
+                kept.append(lead.group(0))
+            dropped = True
+            continue
+        kept.append(s)
+    out = " ".join(kept).strip()
+    return out if out and re.sub(r"<[^>]+>", "", out).strip() else data
+
+
+def chat_json_guarded(system: str, user: str, *, max_tokens: int, profile=None, default=None):
+    """llm.chat_json, then ONE regeneration if the prose carries an overclaim, meta-
+    commentary about the source, a banned word, or a unit/number/name the input never
+    stated. The retry quotes the flagged phrases; whichever reply has fewer flags is kept,
+    and sentences still stating an unsupported unit or name are dropped. Every prose-
+    producing call goes through here so no section can skip the guard."""
+    import llm
+    default = {} if default is None else default
+    source = system + "\n" + user
+    data = llm.chat_json(system, user, max_tokens=max_tokens, default=default)
+    flags = prose_flags(data, profile, source)
+    if not flags:
+        return data
+    quoted = "; ".join(f'"{p}"' for k, p in flags[:4] if k != "unsupported")
+    note = (f"\n\nNote: your wording {quoted} is not allowed. Restate the overclaim as a "
+            "possibility, using could or may inside the same sentence. Never refer to the "
+            "signal, the source or missing information, and avoid banned words; write only "
+            "about the market and the companies. Write in English only.")
+    if not quoted:
+        note = "\n\nNote: write only about the market and the companies. Write in English only."
+    unsupported = [p for k, p in flags if k == "unsupported"][:4]
+    if unsupported:
+        note += (" These are not in the input, so remove them: "
+                 + "; ".join(f'"{p}"' for p in unsupported) + ".")
+    retry = llm.chat_json(system, user + note, max_tokens=max_tokens, default=default)
+    chosen = data
+    if retry and len(prose_flags(retry, profile, source)) < len(flags):
+        chosen = retry
+    chosen = _drop_unsupported_sentences(chosen, source)
+    if _has_foreign(chosen, profile, source):
+        chosen = _to_english(chosen, max_tokens, profile, source)
+    return chosen
+
+
+def _has_foreign(data, profile, source) -> bool:
+    return any(k == "language" for k, _ in prose_flags(data, profile, source))
+
+
+_TRANSLATE_SYSTEM = ("Translate every text value in this JSON into English. Keep company names, "
+                     "product names, numbers and HTML tags exactly as they are. Return the same "
+                     "JSON with the same keys.")
+
+
+def _to_english(data, max_tokens: int, profile, source):
+    """A writer fed a French or Dutch article often answers in that language, and asking
+    again in the same prompt does not fix it. A separate translate-only call does. The
+    translation is used only when it is valid, has the same keys and reads as English."""
+    import json
+    import llm
+    if not isinstance(data, dict):
+        return data
+    tr = llm.chat_json(_TRANSLATE_SYSTEM, json.dumps(data, ensure_ascii=False),
+                       max_tokens=max_tokens, default={})
+    if not isinstance(tr, dict):
+        return data
+    out = dict(data)
+    for k, v in data.items():
+        new = tr.get(k)
+        if k == "event_country" or type(new) is not type(v):
+            continue
+        if isinstance(v, str) or (isinstance(v, list) and len(new) == len(v)):
+            out[k] = new
+    return data if _has_foreign(out, profile, source) else out
+
+
 _BULLET_HEAD = (
     "You are a senior market analyst at Coherent Market Insights with 25 years in the "
     "sector, writing the 'Analyst Opinion' under one news item in a brief for {company}.\n\n"
     "Write exactly 3 bullets. Each bullet is one bolded lead clause in <b></b> stating the "
-    "judgement, then one or two short plain sentences supporting it. Each bullet must give "
-    "{short} something it can act on, and must follow from the SIGNAL. Do not repeat the "
-    "SIGNAL back. Do not restate another bullet.\n\n"
+    "judgement, then one or two short plain sentences supporting it. Each bullet says what "
+    "the SIGNAL shows and how it could matter to {short}: a possible implication or a "
+    "sensible next step, worded with \"could\" or \"may\" wherever the SIGNAL does not state it. "
+    "Do not repeat the SIGNAL back. Do not restate another bullet.\n\n"
 )
 
 
@@ -179,3 +523,33 @@ def bullet_system() -> str:
 # Back-compat for callers still importing the constant: resolves to the full rules,
 # which never under-specifies.
 BULLET_SYSTEM = _BULLET_HEAD + STYLE
+
+
+def seller_context(profile, *, products: bool = True, buyers: bool = False) -> str:
+    """Plain-sentence context (products, optionally who buys them, country) for a prompt.
+
+    Written as sentences, not UPPERCASE LABEL lines: a small model echoes label words
+    ("the buyer function is ...") into the copy. `buyers` is only wanted where the
+    prompt must name who to target. Lines are omitted when the profile has nothing for
+    them, so a profile built before these fields existed produces an empty string.
+    """
+    lines = []
+    prods = getattr(profile, "products", None) or []
+    if products and prods:
+        parts = []
+        for p in prods[:8]:
+            if isinstance(p, dict):
+                name, app = (p.get("name") or "").strip(), (p.get("application") or "").strip()
+            else:
+                name, app = str(p).strip(), ""
+            if name:
+                parts.append(f"{name} — {app}" if app else name)
+        if parts:
+            lines.append("The seller's products: " + "; ".join(parts) + ".")
+    funcs = [f for f in (getattr(profile, "buyer_functions", None) or []) if f]
+    if buyers and funcs:
+        lines.append("Who usually buys them: " + ", ".join(funcs[:5]) + ".")
+    market = (getattr(profile, "market", "") or "").strip()
+    if market and market != "Global":
+        lines.append(f"Country: {market}.")
+    return "\n".join(lines)
