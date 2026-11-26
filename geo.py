@@ -55,7 +55,8 @@ def filter_country(articles: list[Article], country: dict) -> tuple[list[Article
 
 
 def filter_for_lead(articles: list[Article], country: dict, *,
-                    region_fallback_min: int = 4) -> tuple[list[Article], str]:
+                    region_fallback_min: int = 4, profile=None, conn=None,
+                    presence_fetch=None) -> tuple[list[Article], str]:
     """Country-first evidence filter for one lead's brief. Returns (kept, scope)
     where scope is "country" or "region".
 
@@ -71,12 +72,22 @@ def filter_for_lead(articles: list[Article], country: dict, *,
         AND only when the article still points at the lead's country some other
         way: the search `query` that found it carries the country's name or an
         alias/demonym (collect() appends the country name to every query;
-        collect_topic's anchored queries carry the name or the demonym), or its
-        source is one of the country's curated outlets, or its URL has the
-        country's ccTLD. An un-anchored no-geo industry article — the no-geo
-        'industry'/topic leak the 2026-11 live run showed (Korea's IGIS stem-cell
-        JV reached a Morocco lead; a Korea/US autonomous-vessel story reached an
-        India lead) — is dropped.
+        collect_topic's anchored queries carry the name or the demonym) AND names
+        no other country (a "food safety standards India South Korea" query is
+        about India; collect()'s suffix is not lead evidence), or its source is
+        one of the country's curated outlets, or its URL has the country's ccTLD.
+        An un-anchored no-geo industry article — the no-geo 'industry'/topic leak
+        the 2026-11 live run showed (Korea's IGIS stem-cell JV reached a Morocco
+        lead; a Korea/US autonomous-vessel story reached an India lead) — is
+        dropped.
+      - SOURCE COUNTRY: an article with no detected country whose outlet maps to a
+        country (source_country.py, learned from collected articles) is treated as
+        about that country: in-country when it is the lead's, otherwise other-country.
+      - NO-GEO COMPETITOR (needs `profile`): a competitor-bucket article naming no
+        country is KEPT when the rival it names (any written form, see
+        tenant.rival_forms) is active in the lead's country (rivals.rival_active:
+        >= 2 articles in 12 months naming both). An article naming ANOTHER country
+        stays dropped. `conn` / `presence_fetch` feed that check's cache and fetcher.
       - REGION FALLBACK: if fewer than region_fallback_min trigger+competitor
         articles survive, the dropped other-country articles whose countries ALL
         sit inside the lead's REGION may be added back (scope="region"). Never
@@ -111,19 +122,45 @@ def filter_for_lead(articles: list[Article], country: dict, *,
         + ")(?![0-9a-z])") if anchor_toks else None
     tlds = [t.lower() for t in (country.get("tld") or [])]
 
+    import source_country
+    import rivals
+    src_map = source_country.learned_map(conn)
+
     kept: list[Article] = []
     foreign: list[Article] = []
+    foreign_isos: dict[int, set[str]] = {}   # id(article) -> effective country set
     for a in articles:
         cset = regions.article_countries(a)
         src = (a.source or "").lower()
+        if not cset and src in src_map:
+            cset = {src_map[src]}               # outlet belongs to a known country
         if lead_iso in cset or (src and any(o in src for o in outlets)):
             kept.append(a)                      # in-country evidence
         elif cset:
             foreign.append(a)                   # other-country evidence: dropped
+            foreign_isos[id(a)] = cset
+        elif getattr(a, "bucket", "") == "competitor":
+            # No country anywhere: keep only if the rival it names operates in the lead's
+            # country. No profile (or no rival named) -> dropped, as before.
+            rival = rivals.attributed_rival(a, profile) if profile is not None else ""
+            if rival and rivals.rival_active(profile, rival, country, lead_iso,
+                                             conn=conn, fetch=presence_fetch):
+                kept.append(a)
         elif getattr(a, "bucket", "") == "industry":
             q = (getattr(a, "query", "") or "").lower()
             url = (a.url or "").lower()
-            if ((anchor_rx and anchor_rx.search(q))
+            # The query anchors the article to the lead only if it names the lead
+            # country AND names no OTHER country. collect() appends the lead's country
+            # to every query, so "food safety standards India" searched for a South
+            # Korean lead becomes "... India South Korea" and DOES carry the Korean
+            # anchor -- but the query is really about India, and the Korean evidence is
+            # only the suffix collect() added. Treating that as anchored is how an
+            # FSSAI/Bisleri prosecution (no country in its headline) was kept for a
+            # Korean lead. A query naming another country is not lead evidence.
+            q_isos = regions.countries_in_text(q) if q else set()
+            names_lead = lead_iso in q_isos or bool(anchor_rx and anchor_rx.search(q))
+            names_other = bool(q_isos - {lead_iso})
+            if ((names_lead and not names_other)
                     or (src and any(o in src for o in outlets))
                     or any(t in url for t in tlds)):
                 kept.append(a)                  # no-geo but country-anchored
@@ -136,8 +173,53 @@ def filter_for_lead(articles: list[Article], country: dict, *,
     scope = "country"
     if _tc(kept) < region_fallback_min and region_isos:
         regional = [a for a in foreign
-                    if regions.article_countries(a) <= region_isos]
+                    if foreign_isos.get(id(a), set()) <= region_isos]
         if regional:
             kept.extend(regional)
             scope = "region"
     return kept, scope
+
+
+def filter_topic_for_lead(topic_arts: list[Article], country: dict, tokens: list[str], *,
+                          min_on_topic: int = 2, profile=None, conn=None
+                          ) -> tuple[list[Article], str]:
+    """Geo filter for TOPIC news (report briefs), with a widening fallback so a niche
+    market does not end with zero on-topic evidence just because nothing names the
+    lead's country. Returns (kept, scope); scope is the widest tier used.
+
+      country: filter_for_lead as usual.  region: + on-topic articles whose countries all
+      sit in the lead's region.  global: + every other on-topic article.
+    Tiers 2-3 only ever add ON-TOPIC articles; each added article carries geo_scope."""
+    import score
+    if is_global(country):
+        return list(topic_arts), "country"
+    # region_fallback_min=0: filter_for_lead's own region add-back is topic-blind
+    kept, _ = filter_for_lead(topic_arts, country, profile=profile, conn=conn,
+                              region_fallback_min=0)
+    for a in kept:
+        a.geo_scope = "country"
+
+    def _on(a: Article) -> bool:
+        return score.topic_relevance(a, tokens) >= score.TOPICAL
+
+    if sum(1 for a in kept if _on(a)) >= min_on_topic:
+        return kept, "country"
+    kept_ids = {id(a) for a in kept}
+    rest = [a for a in topic_arts if id(a) not in kept_ids and _on(a)]
+    prof = regions.get_profile(country.get("iso2") or country.get("name") or "")
+    region_isos = set(regions.countries_in(prof["region"])) if prof else set()
+    added: set[int] = set()
+    for a in rest:
+        cset = regions.article_countries(a)
+        if cset and cset <= region_isos:
+            a.geo_scope = "region"
+            kept.append(a)
+            added.add(id(a))
+    if sum(1 for a in kept if _on(a)) >= min_on_topic:
+        return kept, "region"
+    far = [a for a in rest if id(a) not in added]
+    for a in far:
+        a.geo_scope = "global"
+        kept.append(a)
+    # scope = widest tier that actually contributed an article
+    return kept, "global" if far else ("region" if added else "country")
