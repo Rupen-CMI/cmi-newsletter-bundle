@@ -21,12 +21,14 @@ import sqlite3
 import sys
 import time
 
-FREE_MAIL = {"gmail.com", "yahoo.com", "yahoo.co.in", "hotmail.com", "outlook.com",
-             "rediffmail.com", "live.com", "icloud.com", "protonmail.com", "aol.com"}
+from enrich import FREE_MAIL, company_info  # noqa: F401 -- FREE_MAIL re-exported for callers
 
 
 def read_leads(path: str, limit: int) -> list[dict]:
-    """Columns are positional: this export has no header row."""
+    """Columns are positional: this export has no header row.
+
+    A lead with a personal email domain and no real company name in the sheet comes
+    back with company "" -- it gets a report brief on its enquired market only."""
     import openpyxl
 
     wb = openpyxl.load_workbook(path, data_only=True)
@@ -43,17 +45,13 @@ def read_leads(path: str, limit: int) -> list[dict]:
         # Market"). Every row in this export has BOTH a company and a topic -- they are
         # two facts about one lead, not alternatives.
         topic = (str(r[5]) if r[5] else "").strip()
-        domain = email.split("@")[-1].lower() if "@" in email else ""
 
-        website = "" if (not domain or domain in FREE_MAIL) else f"https://{domain}"
-        if (not company or company.lower() == "none") and website:
-            # Fall back to the domain's second-level label as the company name.
-            company = domain.split(".")[0].title()
+        company, website = company_info(email, company)
         # "VVF LTd." -> "VVF" reads better in a salutation and searches better.
         company = company.rstrip(". ").strip()
 
-        if not company:
-            continue
+        if not company and not topic:
+            continue    # nothing to write about: no company and no enquired market
         out.append({"name": name.split()[0] if name else "there", "company": company,
                     "email": email, "country": country, "website": website,
                     "topic": topic})
@@ -67,7 +65,7 @@ def dedupe_by_company(leads: list[dict]) -> list[dict]:
     generating twice burns GPU time to produce near-identical copy."""
     seen, out = set(), []
     for l in leads:
-        key = l["company"].lower()
+        key = l["company"].lower() or l["email"].lower()
         if key in seen:
             continue
         seen.add(key)
@@ -113,8 +111,10 @@ def main() -> None:
     import validate_brief as vb
     from brief_builder import build_brief
     from collect import collect
-    from score import eligible, score_all
-    from tenant import Profile
+    from score import eligible, fallback_pool, score_all
+    from tenant import ProfileCache
+
+    profile_cache = ProfileCache()
 
     # Two brief types, and they are not interchangeable:
     #   signal  -- ACCOUNT specific: prospect the lead's own company (default)
@@ -127,6 +127,12 @@ def main() -> None:
     leads = read_leads(args.xlsx, args.limit if args.no_dedupe else args.limit * 3)
     if not args.no_dedupe:
         leads = dedupe_by_company(leads)[: args.limit]
+    if args.kind == "signal":
+        no_co = [l for l in leads if not l["company"]]
+        if no_co:
+            print(f"{len(no_co)} lead(s) with no company information skipped: they only "
+                  "get a report brief (--kind report)")
+        leads = [l for l in leads if l["company"]]
 
     # The leads table is authoritative for each lead's country (same rule as
     # pipeline.stage_generate): keyed by lowercased email, read in the main
@@ -176,19 +182,22 @@ def main() -> None:
                 else lead["country"]
             country = config.get_country(country_name)
             row["country"] = country["name"]
-            profile = Profile.from_company(lead["company"], lead["website"],
-                                           lead["name"], country["name"])
+            # In-run cache only: the main-thread conn above is not safe to share with
+            # worker threads, so no DB persistence here (pipeline.stage_generate does that).
+            profile = profile_cache.get(lead["company"], lead["website"],
+                                        lead["name"], country["name"],
+                                        topic=lead.get("topic", ""))
             arts = collect(profile, country)
             # Country-first evidence filter (same rules as pipeline.stage_generate):
             # keep the lead's own country, drop pure other-country evidence, keep
             # no-geo industry articles, region fallback only within the lead's
             # region. Never the unfiltered pool.
             if not geo.is_global(country):
-                arts, _geo_scope = geo.filter_for_lead(arts, country)
+                arts, _geo_scope = geo.filter_for_lead(arts, country, profile=profile)
             scored = score_all(arts, profile)
             keep = eligible(scored)
             _topic = lead.get("topic", "") if args.kind == "report" else ""
-            brief = build_brief(keep or scored, profile, log=lambda *_: None,
+            brief = build_brief(keep or fallback_pool(scored), profile, log=lambda *_: None,
                                 market_topic=_topic)
             brief = brief[0] if isinstance(brief, tuple) else brief
             # A lead who asked about "Wear Parts Market" wants that market, not a
@@ -204,7 +213,8 @@ def main() -> None:
             # Include the recipient: two contacts at the same company produced the
             # same filename, so the second brief silently overwrote the first and a
             # 5-brief batch left 4 files on disk.
-            slug = "".join(c for c in lead["company"].lower() if c.isalnum())[:20]
+            slug = "".join(c for c in (lead["company"] or lead.get("topic", "")).lower()
+                           if c.isalnum())[:20]
             who = "".join(c for c in lead["name"].lower() if c.isalnum())[:12] or "there"
             path = os.path.join(args.outdir, f"cmi_batch_{slug}_{who}.html")
             with open(path, "w", encoding="utf-8") as f:

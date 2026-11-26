@@ -68,14 +68,30 @@ def _social(profile, include_logos: bool, include_quotes: bool) -> dict:
                                     want_quotes=include_quotes)
 
 
+def prospect_heading(profile) -> str:
+    """Section-1 heading by lead type: the one label that varies with who the lead is."""
+    lt = (getattr(profile, "lead_type", "") or "seller").lower()
+    if lt == "investor":
+        return "Potential Deal"
+    if lt in ("nonprofit", "education", "government"):
+        return "Potential Partnership"
+    return "Potential Customer"
+
+
 # ── LLM helpers ───────────────────────────────────────────────────────────────
+def _ctx(profile) -> str:
+    sc = voice.seller_context(profile)
+    return sc + "\n" if sc else ""
+
+
 def analyst_bullets(profile, signal: str, extra: str = "") -> list[str]:
     system = voice.bullet_system().format(company=profile.company, short=profile.short)
     user = (f"SELLER: {profile.company} — {profile.value_prop}\n"
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
+            f"{_ctx(profile)}"
             f"SIGNAL:\n{signal}\n{extra}\n\n"
             'Return JSON {"bullets":["<b>lead.</b> support.", "...", "..."]} with exactly 3.')
-    data = llm.chat_json(system, user, max_tokens=900, default={}) or {}
+    data = voice.chat_json_guarded(system, user, max_tokens=900, profile=profile) or {}
     out = [_clean(b) for b in (data.get("bullets") or []) if str(b).strip()]
     return out[:3]
 
@@ -95,12 +111,13 @@ def analyst_bullets_multi(profile, signals: list[str]) -> list[list[str]]:
     system = voice.bullet_system().format(company=profile.company, short=profile.short)
     blocks = "\n\n".join(f"[{i}] SIGNAL:\n{s}" for i, s in enumerate(signals))
     user = (f"SELLER: {profile.company} — {profile.value_prop}\n"
-            f"MARKET: {getattr(profile, 'market', 'Global')}\n\n"
+            f"MARKET: {getattr(profile, 'market', 'Global')}\n"
+            f"{_ctx(profile)}\n"
             f"{blocks}\n\n"
             'Return JSON {"items":[{"index":<int>,"bullets":["<b>lead.</b> support.", "...", "..."]}]} '
             "-- one entry per signal index above, each with exactly 3 bullets. Each signal's "
             "bullets must follow only from THAT signal, never mix content between signals.")
-    data = llm.chat_json(system, user, max_tokens=900 * len(signals), default={}) or {}
+    data = voice.chat_json_guarded(system, user, max_tokens=900 * len(signals), profile=profile) or {}
     items = data.get("items") if isinstance(data, dict) else None
     out: list[list[str]] = [[] for _ in signals]
     seen = set()
@@ -217,92 +234,100 @@ def caps_projects(profile, *, kind: str = "signal", market_topic: str = "") -> t
 _LEDE_COUNT_WORD = {1: "one", 2: "two", 3: "three", 4: "four"}
 
 
+_GENERIC_LABEL = {"Potential Customer": "a potential customer",
+                  "Potential Deal": "a potential deal",
+                  "Potential Partnership": "a potential partnership",
+                  "Industry Outlook": "an industry shift",
+                  "Competition Outlook": "a competitor move"}
+
+# Demonyms the lead's own country may bring into a theme phrase ("an Indian ...").
+_DEMONYM = {"india": "Indian", "united states": "American", "usa": "American",
+            "united kingdom": "British", "uk": "British", "china": "Chinese",
+            "japan": "Japanese", "germany": "German", "france": "French",
+            "australia": "Australian", "canada": "Canadian", "brazil": "Brazilian",
+            "singapore": "Singaporean", "south korea": "Korean", "uae": "Emirati",
+            "saudi arabia": "Saudi", "italy": "Italian", "spain": "Spanish"}
+
+
+def _theme_ok(theme, market: str) -> str:
+    """The theme phrase if it is safe to put in the lede, else "".
+
+    A theme is 2 to 6 plain lowercase words: no digits or currency, no punctuation,
+    and no capitalised word other than the lead's country and its demonym, so a
+    company, product or person name can never get through."""
+    if not isinstance(theme, str):
+        return ""
+    t = re.sub(r"\s+", " ", theme).strip()
+    words = t.split(" ")
+    if not t or not 2 <= len(words) <= 6:
+        return ""
+    if re.search(r"[\d$€£¥₹%<>&.,;:!?'’\"()/]", t):
+        return ""
+    allowed = set()
+    mk = (market or "").strip()
+    if mk and mk != "Global":
+        allowed = set(mk.split())
+        if mk.lower() in _DEMONYM:
+            allowed.add(_DEMONYM[mk.lower()])
+    for w in words:
+        if w[:1].isupper() and w not in allowed:
+            return ""
+    return t
+
+
+def _build_lede(profile, sections: list[dict], themes: list, opening: str) -> str:
+    """The lede, assembled in code: fixed opener, one bolded label per section, an
+    optional vetted theme phrase after it, and the country once at the end."""
+    market = (getattr(profile, "market", "") or "").strip()
+    titles = " ".join(s.get("title", "") for s in sections).lower()
+    title_words = {w for w in re.findall(r"[a-z]+", titles) if len(w) > 3}
+    parts = []
+    used_market = False
+    for i, s in enumerate(sections):
+        art, noun = _GENERIC_LABEL.get(s["label"], "a market development").split(" ", 1)
+        part = f"{art} <b>{noun}</b>"
+        theme = _theme_ok(themes[i] if i < len(themes) else "", market)
+        if theme and not title_words.isdisjoint(re.findall(r"[a-z]+", theme.lower())):
+            theme = ""          # a word lifted from the section's own title
+        if theme:
+            part += f" {theme}"
+            used_market = used_market or bool(market and market in theme)
+        parts.append(part)
+    if len(parts) > 1:
+        parts = parts[:-1] + ["and " + parts[-1]]
+    joined = (", " if len(parts) > 2 else " ").join(parts)
+    where = f" in {market}" if market and market != "Global" and not used_market else ""
+    return f"{opening} {joined}{where}.".replace("  ", " ")
+
+
 def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
-    """The lede and the three top-3 lines, written after the sections exist."""
+    """The lede and the three top-3 lines, written after the sections exist.
+
+    The lede is built in code (see _build_lede); the model only supplies an optional
+    short theme phrase per section and the top-3 lines."""
     system = ("You write the opening of a market brief for one named client.\n\n"
               + voice.active_style())
     body = "\n".join(f"[{s['label']}] {s['title']}: {re.sub(r'<[^>]+>', '', s['body_html'])[:280]}"
                      for s in sections)
     n = len(sections)
     count_word = _LEDE_COUNT_WORD.get(n, str(n))
-    # 2026-10-21 cmiinsights.info redesign: the lede opens with "This week's brief
-    # covers N signals: ..." rather than the old "CMI tracked N signals this week."
-    # -- the fixed count/noun ("N signals") is still hardcoded for the same reason
-    # as before (a count is not a judgement call to leave to the model), but the
-    # per-signal clauses are genuinely new prose each time, so they can't be a fixed
-    # string -- the model writes the whole sentence, just told exactly how many
-    # clauses and what each clause's fixed label text must be.
-    #
-    # 2026-10-29: confirmed by the user that naming the specific entity in the lede
-    # (e.g. "a potential customer Candid Health raises $120 million...", "Apple is
-    # expanding its retail...", "No7 launched six new skincare products...") is
-    # WRONG -- it gives the reader everything they need from the subject line
-    # alone and they never read the rest of the brief. The lede clause may add
-    # generic/thematic color (geography, sector, theme -- "in North America", "on
-    # lab animal rules", "with a disclosed IPO deviation") but must NEVER use the
-    # entity's own proper name (company, product, publication, person). The named
-    # specifics belong only in the numbered cards below. Pass the actual names
-    # explicitly so the model knows exactly what string(s) it must avoid.
-    # Each section's own "title" already holds the entity's real proper name
-    # (company name for a _prospect card, headline for a _story card) -- that is
-    # exactly the string the lede must never contain.
-    names_to_avoid = sorted({s["title"].strip() for s in sections
-                             if s.get("title") and s["title"] != "—"})
-    clause_spec = "; ".join(f'clause {i+1} about the {s["label"].lower()}'
-                             for i, s in enumerate(sections))
     user = (f"CLIENT: {profile.company} ({profile.short}) — {profile.value_prop}\n"
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
             f"VERTICALS TRACKED: {', '.join(profile.industries)}\n"
             f"SECTIONS:\n{body}\n\n"
-            'Return JSON {"lede":"...","top3":["...","...","..."]}. '
-            f'The lede is ONE sentence: "This week\'s brief covers {count_word} '
-            f"signal{'s' if n != 1 else ''}: " + clause_spec + ", each clause a "
-            "short bolded label phrase in <b></b> (the section's own subject, e.g. "
-            "\"a <b>potential customer</b>\" or \"the <b>industry outlook</b>\" or "
-            "\"a <b>competitor move</b>\") optionally followed by a FEW GENERIC "
-            "words of color -- geography, sector, or theme only (e.g. \"in North "
-            "America\", \"on lab animal rules\", \"with a disclosed IPO "
-            "deviation\"). "
-            "Do NOT name the specific company, product, person, or publication "
-            "anywhere in the lede"
-            + (f" -- never write any of: {', '.join(names_to_avoid)}" if names_to_avoid else "")
-            + ". Those names appear only in the numbered cards below this lede, "
-            "never here. Join clauses with commas and \"and\" before the last "
-            "clause. Do not add any sentence after this one. "
+            'Return JSON {"themes":["...","..."],"top3":["...","...","..."]}. '
+            "themes has one entry per section, in the same order as SECTIONS: a phrase of 2 to 6 "
+            "lowercase words naming what that section is about in general terms, for example "
+            "\"expanding production capacity\". No company, "
+            "product, person or publication names, no numbers. Use an empty string if unsure. "
             "Each top3 line is a bolded claim in <b></b> then one plain "
             "sentence on why it matters. Same order as SECTIONS.")
-    data = llm.chat_json(system, user, max_tokens=1000, default={}) or {}
-    lede = _clean(data.get("lede", ""))
-    # Guard against the model dropping the fixed opening entirely (seen with the old
-    # hardcoded-opener design too) -- if it's missing, prepend it so the lede never
-    # starts cold with a bare clause list.
-    fixed_opening = f"This week's brief covers {count_word} signal{'s' if n != 1 else ''}:"
-    # Guard against the model echoing the opener BACK into its own continuation --
-    # seen at scale in Campaign 5 (583/1000 signal briefs, 2026-10-27, and again
-    # 276/300 FAIL briefs in the 2026-10-28 batch2 run after a first fix attempt
-    # that only handled the double-occurrence case). The model sometimes puts the
-    # echo in <b></b> as clause 1 WITHOUT a clean plain-text opener before it (e.g.
-    # "A <b>This week's brief covers two signals:</b> potential customer..." -- only
-    # ONE regex match, inside the bold span, not at the start) -- counting
-    # occurrences and only acting when there are 2+ missed this shape entirely, and
-    # the "opener missing, prepend it" guard below then added a SECOND, genuinely
-    # duplicate opener on top. Simplest robust fix: strip every occurrence of the
-    # opener text wherever it appears (bolded or not, anywhere in the string), then
-    # always (re)prepend exactly one canonical opener -- no counting, no assumption
-    # about which occurrence is "the real one".
-    _opener_re = re.compile(r"this week.?s brief covers \w+ signals?:", re.I)
-    lede = re.sub(r"<b>\s*" + _opener_re.pattern + r"\s*</b>", "", lede, flags=re.I)
-    lede = _opener_re.sub("", lede)
-    lede = re.sub(r"^[\s,]+", "", lede).strip()
-    lede = re.sub(r"\s{2,}", " ", lede)
-    # Strip any lingering name-leak the model still slipped in despite the
-    # instruction above -- "do not trust instruction-following for anything load-
-    # bearing" is this file's standing rule (same reasoning as the opener itself).
-    for name in names_to_avoid:
-        lede = re.sub(re.escape(name), "", lede, flags=re.I)
-    lede = re.sub(r"\s{2,}", " ", lede).strip(" ,")
-    lede = f"{fixed_opening} {lede}".strip() if lede else f"{fixed_opening.rstrip(':')}."
-    lines = [_clean(x) for x in (data.get("top3") or [])][:3]
+    opening = f"This week's brief covers {count_word} development{'s' if n != 1 else ''}:"
+
+    data = voice.chat_json_guarded(system, user, max_tokens=1000, profile=profile) or {}
+    themes = data.get("themes") if isinstance(data, dict) else None
+    lede = _build_lede(profile, sections, themes if isinstance(themes, list) else [], opening)
+    lines = [_clean(x) for x in ((data.get("top3") if isinstance(data, dict) else None) or [])][:3]
     while len(lines) < len(sections):
         i = len(lines)
         lines.append(f"<b>{sections[i]['title']}</b>")
@@ -349,6 +374,7 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
     now = datetime.now(timezone.utc)
     market = getattr(profile, "market", "Global")
     sections: list[dict] = []
+    srcs: list[str] = []   # source article text per section, same order as sections
 
     # brief_builder's own key names -- "customer"/"competition" are its debug dict,
     # the rendered cards live under these.
@@ -382,16 +408,19 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
              "cells": [{"h": "What is changing", "v": _clean(news.get("headline", ""))}]},
             ("What is changing", "Why it matters for you"),
             flag=market_topic, title=market_topic))
+        srcs.append(news.get("_source_text", ""))
     elif kind == "report" and cust:
         # Fall back to a real Potential Customer card rather than drop the section
         # outright, if generation happened to find one.
         log("    · section 1: your market (fallback to potential customer)")
-        sections.append(_prospect("Potential Customer", cust,
+        sections.append(_prospect(prospect_heading(profile), cust,
                                   ("Why now", "Who to target")))
+        srcs.append(cust.get("_source_text", ""))
     elif cust:
         log("    · section 1: potential customer")
-        sections.append(_prospect("Potential Customer", cust,
+        sections.append(_prospect(prospect_heading(profile), cust,
                                   ("Why now", "Who to target")))
+        srcs.append(cust.get("_source_text", ""))
 
     # -- section 2 -------------------------------------------------------------
     # 2026-10-19: report briefs are capped at 2 sections (Your Market + Competition
@@ -404,19 +433,25 @@ def build_context(profile, brief: dict, kind: str, *, market_topic: str = "",
                                news.get("body_html", ""),
                                source_url=news.get("source_url", ""),
                                source_name=news.get("source_name", "")))
+        srcs.append(news.get("_source_text", ""))
 
     # -- section 3 -------------------------------------------------------------
     if comp:
         log("    · section 3: competition outlook")
         sections.append(_prospect("Competition Outlook", comp,
                                   ("Why it matters", "Their edge")))
+        srcs.append(comp.get("_source_text", ""))
 
     # -- analyst opinions ------------------------------------------------------
     # One call for every section's bullets instead of one call per section -- see
     # analyst_bullets_multi's docstring. Falls back internally to the old
     # one-call-per-signal path for any section the combined call fails to answer.
     log(f"    · analyst opinions: {len(sections)} section(s) in one call")
-    signals = [f"{s['title']}\n{re.sub(r'<[^>]+>', '', s['body_html'])}" for s in sections]
+    signals = []
+    for s, src in zip(sections, srcs):
+        prose = f"{s['title']}\n{re.sub(r'<[^>]+>', '', s['body_html'])}"
+        # the article lets the analyst check units and figures against the source, not just the rewrite
+        signals.append(f"ARTICLE: {src}\nSECTION TEXT: {prose}" if src else prose)
     all_bullets = analyst_bullets_multi(profile, signals)
     for s, bullets in zip(sections, all_bullets):
         s["bullets"] = bullets

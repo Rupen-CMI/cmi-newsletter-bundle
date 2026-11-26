@@ -34,6 +34,8 @@ import os
 import re
 import sys
 
+import config as _config
+
 SECTIONS = ("Potential Customer", "Industry Outlook", "Competition Outlook")
 
 # 2026-10-19: report briefs are capped at 2 sections (Your Market + Competition
@@ -53,8 +55,16 @@ REPORT_SECTIONS = ("Potential Customer", "Competition Outlook")
 # div) rather than relying on fixed label text, since the label is the dynamic topic
 # name per brief and has no fixed string to alias anymore.
 SECTION_ALIASES = {
-    "Potential Customer": ("Potential Customer", "Your Market"),
+    "Potential Customer": ("Potential Customer", "Potential Deal",
+                          "Potential Partnership", "Your Market"),
 }
+
+# The three headings a lead-type-aware brief may render for section 1's prospect
+# card (compose._prospect picks by lead_type: a company gets "Potential Customer",
+# an investor gets "Potential Deal", a non-profit/university/public body gets
+# "Potential Partnership"). Kept separate from SECTION_ALIASES because the role
+# checks below must NOT treat a report brief's old "Your Market" label as a company.
+CUSTOMER_LABELS = ("Potential Customer", "Potential Deal", "Potential Partnership")
 
 
 def visible_text(html: str) -> str:
@@ -69,20 +79,49 @@ def visible_text(html: str) -> str:
     return re.sub(r"[ \t]+", " ", t)
 
 
-def section_company(text: str, label: str) -> str:
+def section_company(text: str, label) -> str:
     """The company name rendered under a section's flag line.
 
     The template puts the flag ('● Potential Customer · <industry>') immediately above
     the company heading, so the first substantial line after it is the subject.
+    `label` may be one string or several accepted headings for the same slot.
     """
-    m = re.search(rf"●?\s*{re.escape(label)}\s*·[^\n]*\n(.*)", text)
-    if not m:
-        return ""
-    for line in m.group(1).split("\n")[:4]:
-        line = line.strip()
-        if 2 < len(line) < 70 and not line.lower().startswith(("why ", "who ", "their ")):
-            return line
+    labels = (label,) if isinstance(label, str) else tuple(label)
+    for one in labels:
+        m = re.search(rf"●?\s*{re.escape(one)}\s*·[^\n]*\n(.*)", text)
+        if not m:
+            continue
+        for line in m.group(1).split("\n")[:4]:
+            line = line.strip()
+            if 2 < len(line) < 70 and not line.lower().startswith(("why ", "who ", "their ")):
+                return line
     return ""
+
+
+_GENERIC_BUYER_WORDS = {"companies", "company", "brands", "buyers", "makers",
+                        "manufacturers", "providers", "institutional", "industrial"}
+
+
+def buyer_context_terms(profile) -> set[str]:
+    """Words that mark a customer slot as a BUYER vertical for this seller.
+
+    Replaces the old pharma-only list ("hospital", "clinic", ...) that flagged every
+    non-healthcare lead. Built from the profile's own buyer verticals and buyer
+    functions, so it works for any tenant, and returns an empty set when the profile
+    predates those fields (getattr default) rather than raising.
+    """
+    terms: set[str] = set()
+    for src in (getattr(profile, "industries", None),
+                getattr(profile, "buyer_functions", None)):
+        if not src:
+            continue
+        if isinstance(src, str):
+            src = [src]
+        for item in src:
+            for w in re.findall(r"[a-z][a-z0-9-]{3,}", str(item).lower()):
+                if len(w) > 4 and w not in _GENERIC_BUYER_WORDS:
+                    terms.add(w)
+    return terms
 
 
 def norm(s: str) -> str:
@@ -151,6 +190,249 @@ def geo_scrub(text: str, profile) -> str:
             t = re.sub(rf"(?<![0-9a-z]){re.escape(comp_norm)}(?![0-9a-z])",
                        " ", t, flags=re.I)
     return t
+
+
+def main_content_html(html: str) -> str:
+    """The model-written part of a brief, with the fixed template blocks removed.
+
+    Section cards, analyst bullets and the lede are written from news; testimonials,
+    the "Inside Coherent Market Insights" caps/projects showcase, certification
+    tiles, per-section CTAs, the fixed banner line and the footer are static template
+    copy that is identical (or semi-random marketing text) in every brief. Running
+    style/jargon checks over the static copy reports defects nobody can fix. The cut
+    is made at the "Inside Coherent Market Insights" eyebrow, which precedes the
+    whole static tail of <main>.
+    """
+    h = html or ""
+    cuts = [h.find(m) for m in ("Inside Coherent Market Insights",
+                                '<footer class="foot"', "<footer class='foot'")
+            if h.find(m) != -1]
+    if cuts:
+        h = h[:min(cuts)]
+    h = re.sub(r"<header\b[^>]*>.*?</header>", " ", h, flags=re.S | re.I)
+    h = re.sub(r'<p class="agentline">.*?</p>', " ", h, flags=re.S | re.I)
+    h = re.sub(r'<div class="seccta">.*?</div>', " ", h, flags=re.S | re.I)
+    # Fixed labels inside the dynamic blocks: the "Analyst Opinion" tag and the
+    # "CMI Intelligence · date · ✓ Analyst-reviewed" badge. Left in, they glue onto
+    # the first bullet and turn repeated bullets into a duplicate-sentence hit.
+    h = re.sub(r'<div class="tag">\s*Analyst Opinion\s*</div>', " ", h, flags=re.I)
+    h = re.sub(r'<div class="prov">.*?</div>', " ", h, flags=re.S | re.I)
+    return h
+
+
+def main_content_text(html: str) -> str:
+    """Visible text of the model-written content only (see main_content_html)."""
+    return visible_text(main_content_html(html))
+
+
+LEDE_LEAK_PHRASES = ("bolded label phrase", "optionally followed", "generic words of color",
+                     "as indicated by the trigger", "json", "return a ", "<b></b>")
+_LEDE_BLANK_SLOT = re.compile(r"\b(?:the|a|an)\s+(?:in|of|for|by|where|on|and)\b", re.I)
+_LEDE_EMPTY_SLOT = re.compile(r"\b(?:by|where|from)\s+(?:in|is|are)\b", re.I)
+
+
+def lede_leaks(lede_text: str, lede_html: str = "") -> list[str]:
+    """Prompt instructions or unfilled slots that leaked into the lede."""
+    low = (lede_text or "").lower()
+    raw_low = (lede_html or "").lower()
+    out: list[str] = []
+    for phrase in LEDE_LEAK_PHRASES:
+        hit = phrase in raw_low if phrase == "<b></b>" else phrase in low
+        if hit:
+            out.append(f"LEDE LEAK ERROR: the lede contains '{phrase}' -- a writing "
+                       f"instruction or empty tag leaked into the copy instead of a "
+                       f"finished sentence.")
+    for m in _LEDE_BLANK_SLOT.finditer(low):
+        out.append(f"LEDE LEAK ERROR: the lede has a blank slot ('{m.group(0)}') -- a "
+                   f"name, place or label the model was supposed to fill was left out.")
+        break
+    m = _LEDE_EMPTY_SLOT.search(low)
+    if m:
+        out.append(f"LEDE LEAK ERROR: the lede has a broken slot ('{m.group(0)}') -- a "
+                   f"clause was cut after its preposition.")
+    return out
+
+
+_OVERCLAIM_PATTERNS = (
+    ("will raise/increase demand", re.compile(
+        r"\bwill\s+(?:raise|increase|boost|drive|lift)\b.{0,40}"
+        r"\b(?:demand|sales|orders|adoption)\b", re.I)),
+    ('"lift sales"', re.compile(r"\blift\s+sales\b", re.I)),
+    ('"more inquiries"', re.compile(r"\bmore\s+inquir(?:y|ies)\b", re.I)),
+    ('"more enquiries"', re.compile(r"\bmore\s+enquir(?:y|ies)\b", re.I)),
+    ('"price sensitivity"', re.compile(r"\bprice\s+sensitivity\b", re.I)),
+    ("a penalty claim", re.compile(r"\bpenalt", re.I)),
+    ('"stricter"', re.compile(r"\bstricter\b", re.I)),
+)
+
+
+_HEDGE_WORDS = re.compile(
+    r"\b(?:could|may|might|can|possibly|potentially|likely)\b", re.I)
+
+
+def _sentences(text: str) -> list[str]:
+    """Split on . ! ? followed by whitespace (or end of text).
+
+    Pure and deliberately simple: a sentence is the unit the over-claim and
+    meta-commentary checks reason about, because a hedge anywhere in the same
+    sentence qualifies the whole claim it carries.
+    """
+    out: list[str] = []
+    for chunk in re.split(r"(?<=[.!?])\s+", text or ""):
+        s = chunk.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def overclaim_warnings(text: str) -> list[str]:
+    """Commercial effects the signal does not state (demand, sales, penalties...).
+
+    Judged per SENTENCE: a sentence is flagged only when it matches a pattern
+    AND carries no hedge word ('could', 'may', 'might', 'can', 'possibly',
+    'potentially', 'likely'). "Waters may see more inquiries from food labs" is
+    a qualified inference and passes; "Price sensitivity will rise as inflation
+    bites" states it as fact and is flagged. Each pattern is still reported once
+    (its first unhedged hit), so the message format callers quote is unchanged.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in _sentences(text):
+        if _HEDGE_WORDS.search(sentence):
+            continue
+        for name, pat in _OVERCLAIM_PATTERNS:
+            if name in seen:
+                continue
+            m = pat.search(sentence)
+            if m:
+                seen.add(name)
+                out.append(f"OVERCLAIM: the copy uses {name} ('{m.group(0).strip()}') -- "
+                           f"the signal does not state that commercial effect. Write what "
+                           f"was announced, or qualify any implication with 'could'/'may' "
+                           f"and its condition.")
+    return out
+
+
+# Talk about the source/instructions rather than the market. Kept as patterns
+# (not bare words) so ordinary market copy -- "the signal is a direct fit for its
+# products" is flagged deliberately, while the fixed plastic opener "This week's
+# brief covers N signals" (plural, no "the"/"this") never matches.
+_META_COMMENTARY_PATTERNS = (
+    re.compile(r"\bthe signal\b", re.I),
+    re.compile(r"\bthis signal\b", re.I),
+    re.compile(r"\bno figures\b", re.I),
+    re.compile(r"\bnot (?:stated|given|disclosed) in the (?:signal|source|article)\b", re.I),
+    re.compile(r"\btreat (?:it|this|the risk) as a scenario\b", re.I),
+    re.compile(r"\bas indicated by\b", re.I),
+    re.compile(r"\bthe (?:source|article) (?:says|does not)\b", re.I),
+)
+
+
+def meta_commentary_warnings(text: str) -> list[str]:
+    """Sentences that talk about the source or the instructions, not the market.
+
+    Pure text -> list[str]; one warning per distinct offending sentence, so a
+    sentence matching several patterns (e.g. "No figures in the signal, so treat
+    the risk as a scenario") is reported once.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in _sentences(text):
+        normed = " ".join(sentence.lower().split())
+        if normed in seen:
+            continue
+        for pat in _META_COMMENTARY_PATTERNS:
+            m = pat.search(sentence)
+            if m:
+                seen.add(normed)
+                out.append(f"META COMMENTARY: the copy talks about the source or the "
+                           f"instructions ('{m.group(0).strip()}') instead of the market "
+                           f"-- write what the announcement means for the reader, not "
+                           f"what the signal does or does not give.")
+                break
+    return out
+
+
+BANNED_WORDS = ("leverage", "ecosystem", "landscape", "throughput", "go-to-market",
+                "synergies", "robust", "seamless", "pivotal", "crucial", "unlock",
+                "empower", "harness", "game-changer", "double down", "table stakes")
+
+
+def banned_word_warnings(text: str) -> list[str]:
+    """Marketing jargon that voice.py's style rules ban from main content."""
+    out: list[str] = []
+    for w in BANNED_WORDS:
+        if re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", text or "", re.I):
+            out.append(f"BANNED WORD: '{w}' is on the style blacklist -- say the "
+                       f"concrete thing instead.")
+    return out
+
+
+def _rival_names(profile) -> list[str]:
+    """Competitor names plus their written forms (Profile.competitor_aliases and local
+    names), for the role checks. Never used for the seller's own name."""
+    import tenant as _tenant
+    out: list[str] = []
+    for c in (getattr(profile, "competitors", None) or []):
+        out += _tenant.rival_forms(profile, c) if isinstance(c, str) else [c]
+    return out
+
+
+def _entity_names(profile) -> list[str]:
+    """The lead's own proper nouns: company, product names and competitors."""
+    names: list[str] = [getattr(profile, "company", "") or ""]
+    for p in (getattr(profile, "products", None) or []):
+        names.append(p.get("name") if isinstance(p, dict) else str(p or ""))
+    for c in (getattr(profile, "competitors", None) or []):
+        names.append(c.get("name") if isinstance(c, dict) else str(c or ""))
+    return [n.strip() for n in names if isinstance(n, str) and n.strip()]
+
+
+def mask_entities(text: str, profile, *, token: str = "[entity]") -> str:
+    """Replace the lead's own proper nouns with a neutral token before the banned-word
+    check, so a BRAND word that is also a banned generic term is not flagged while
+    the generic word still is.
+
+    "Empower 3 software" (a Waters product named Empower) was a BANNED WORD hit on
+    every brief that mentioned the product; "we empower lab teams" is a genuine
+    style defect. A capitalised entity name is therefore matched only in its
+    proper-noun casing; an all-lowercase entity name (some brands are) is matched
+    case-insensitively since it carries no casing signal to distinguish.
+
+    Pure: no I/O, no imports beyond `re`; longest names first so "Empower
+    chromatography software" is consumed before the bare "Empower".
+    """
+    out = text or ""
+    for name in sorted(set(_entity_names(profile)), key=len, reverse=True):
+        flags = re.I if name == name.lower() else 0
+        out = re.sub(rf"(?<![0-9a-z]){re.escape(name)}(?![0-9a-z])",
+                     token, out, flags=flags)
+    return out
+
+
+def duplicate_sentence_warnings(text: str) -> list[str]:
+    """The same full sentence appearing twice in the main content."""
+    seen: dict[str, int] = {}
+    for sentence in re.split(r"(?<=[.!?])\s+", text or ""):
+        normed = re.sub(r"\s+", " ", sentence.strip().lower())
+        if len(normed.split()) < 8:
+            continue
+        seen[normed] = seen.get(normed, 0) + 1
+    return [f"DUPLICATE SENTENCE: this sentence appears {n} times -- '{s[:140]}'"
+            for s, n in seen.items() if n > 1]
+
+
+def company_case_warnings(text: str, company: str) -> list[str]:
+    """The seller's mixed/title-cased name rendered in all lowercase in the copy."""
+    c = (company or "").strip()
+    if not c or c.lower() == c or c == c.upper():
+        return []
+    if c in (text or ""):
+        return []
+    if re.search(rf"(?<![0-9a-z]){re.escape(c.lower())}(?![0-9a-z])", (text or "").lower()):
+        return [f"COMPANY CASE: the seller is '{c}' but the copy writes "
+                f"'{c.lower()}' -- a product word, not the company name."]
+    return []
 
 
 def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
@@ -312,7 +594,7 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
             warns.append(f"EMAIL check could not run: {type(e).__name__}: {e}")
 
     # ---- ROLES -------------------------------------------------------------
-    cust = section_company(text, "Potential Customer")
+    cust = section_company(text, CUSTOMER_LABELS)
     if not cust and kind == "report":
         # A report brief's section 1 is a market topic (e.g. "Wireless Access Point
         # Market"), not a company -- the buyer-role checks below ("is this a known
@@ -324,7 +606,7 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
         cust = ""
     comp = section_company(text, "Competition Outlook")
 
-    for rival in (profile.competitors or []):
+    for rival in _rival_names(profile):
         if cust and name_overlap(cust, rival):
             fails.append(f"ROLE ERROR: Potential Customer is '{cust}', a known competitor "
                          f"(matches '{rival}'). A rival must appear in Competition Outlook.")
@@ -335,33 +617,39 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
     # absent from that list -- Dr Reddy's launching an immuno-oncology biosimilar passed
     # every name check while being plainly not a buyer of CAR-T. Catch it by category:
     # the customer should read like a BUYER vertical, not like the seller's own trade.
+    #
+    # 2026-11: the old buyerish list was pharma-only ("hospital", "clinic", ...), so
+    # every non-healthcare lead looked like a seller-category company. Buyerish is now
+    # profile-driven: any word from the profile's own buyer verticals (industries) or
+    # buyer_functions, which works for any tenant and cannot drift between runs.
     if cust:
         seller_trade = {w for w in re.findall(r"[a-z][a-z0-9-]{4,}",
                                               (profile.value_prop or "").lower())} - {
             "india", "indian", "supplies", "approved", "first", "targeted", "relapsed",
             "refractory", "patients", "treating"}
         cust_ctx = ""
-        m = re.search(rf"Potential Customer\s*·(.{{0,900}})", text, re.S)
+        _cust_labels_re = "|".join(re.escape(l) for l in CUSTOMER_LABELS)
+        m = re.search(rf"(?:{_cust_labels_re})\s*·(.{{0,900}})", text, re.S)
         if m:
             cust_ctx = m.group(1).lower()
-        buyerish = any(w in cust_ctx for w in
-                       ("hospital", "clinic", "centre", "center", "network", "institute",
-                        "provider", "insurer", "payer", "medical college"))
+        # Whole-word match: a substring test let "payment" match "payments" in an
+        # unrelated heading and silently suppress this warning.
+        cust_words = set(re.findall(r"[a-z][a-z0-9-]{3,}", cust_ctx))
+        buyerish = bool(buyer_context_terms(profile) & cust_words)
         sellerish = sum(1 for w in seller_trade if len(w) > 5 and w in cust_ctx)
         if cust_ctx and not buyerish and sellerish >= 2:
             warns.append(f"Potential Customer '{cust}' reads like a company in the seller's own "
                          f"category, not a buyer. Check it is not a rival or supplier.")
         # A regulator, ministry or trade body is a real signal but has no purchase order
-        # to give. Left unchecked the model invents a reason it might buy.
-        non_buyers = ("regulator", "ministry", "cdsco", "dcgi", "government", "court",
-                      "tribunal", "association", "council", "committee", "commission",
-                      "department of", "task force")
-        if any(w in cust.lower() for w in non_buyers):
+        # to give. Left unchecked the model invents a reason it might buy. The list is
+        # shared with the generator's own candidate filter (config.NON_BUYER_TERMS) so
+        # a name rejected at generation time cannot sail through validation.
+        if any(w in cust.lower() for w in _config.NON_BUYER_TERMS):
             fails.append(f"ROLE ERROR: Potential Customer is '{cust}', which regulates or "
                          f"governs the market rather than buying in it.")
 
     if comp:
-        if not any(name_overlap(comp, r) for r in (profile.competitors or [])):
+        if not any(name_overlap(comp, r) for r in _rival_names(profile)):
             warns.append(f"Competition Outlook features '{comp}', which is not on the "
                          f"competitor list. Verify it actually sells a substitutable product.")
         # Being a real rival is not enough -- the SIGNAL has to be about the shared
@@ -437,7 +725,19 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
     if topic:
         topic_terms = {w for w in re.findall(r"[a-z][a-z0-9-]{3,}", topic.lower())
                        if w not in stop}
-        if topic_terms and not any(w in low for w in topic_terms):
+        # A signal brief's topic is the lead's raw company field, often squashed from the
+        # domain ("Vdlhapro", "Thetravelportfolio") while the brief writes "VDL Hapro".
+        # Compare with spaces removed, and accept the profile's name when the raw field
+        # starts with its first word ("Bluematterconsulting" vs "Blue Matter", "Pgigrup" vs
+        # "PGI Engineering") and the brief names the profile's company.
+        flat = re.sub(r"[^a-z0-9]", "", low)
+        t_flat = re.sub(r"[^a-z0-9]", "", topic.lower())
+        c_words = re.findall(r"[a-z0-9]+", (profile.company or "").lower())
+        c_flat = "".join(c_words)
+        named = (len(t_flat) >= 4 and t_flat in flat) or (
+            kind == "signal" and c_words and len(c_words[0]) >= 3
+            and t_flat.startswith(c_words[0]) and c_flat in flat)
+        if topic_terms and not named and not any(w in low for w in topic_terms):
             fails.append(
                 f"TOPIC ERROR: none of the expected subject '{topic}' appears anywhere "
                 f"in the brief -- this looks like the wrong report entirely.")
@@ -538,7 +838,10 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
                 acronym_match = bool(dom_root and acronym and len(words) >= 2 and
                                      (dom_root == acronym or dom_root.startswith(acronym)
                                       or acronym.startswith(dom_root)))
-                return substring_match or acronym_match
+                # First word as the head of the domain: "PGI Engineering" <-> pgigrup.com
+                first = words_all[0] if words_all else ""
+                head_match = bool(dom_root and len(first) >= 3 and dom_root.startswith(first))
+                return substring_match or acronym_match or head_match
 
             # norm() has no transliteration for non-Latin scripts (Cyrillic, CJK,
             # Arabic, ...) -- a company name in one of those normalizes to "" and
@@ -604,8 +907,6 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
     # source article in their pool at all) -- this is the deterministic backstop that
     # catches it in the rendered output regardless of how it got there (a stale
     # company_intel cache entry, a direct quote inside a "Source:" link, etc).
-    import config as _config
-
     low_html = html.lower()
     for firm in _config.RESEARCH_FIRM_SOURCES:
         if f"source: {firm}" in low_html or f">{firm}<" in low_html:
@@ -750,6 +1051,33 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
                     f"'{card_title}' -- the lede must only use the generic label "
                     f"(e.g. 'a potential customer'), never the entity's own name. "
                     f"Specifics belong in the numbered card only.")
+
+    # ---- MAIN-CONTENT QUALITY (independent of profile) ----------------------
+    # 2026-11: the reviews of the 12 Nov 17 briefs and the analyst's Waters notes
+    # named the same defects repeatedly -- a lede carrying the writer prompt's own
+    # instructions ("each a short bolded label phrase..."), inferred commercial
+    # effects the signal never stated ("stricter limits will raise testing demand"),
+    # voice.py's banned jargon, sentences duplicated between a card and its bullets,
+    # and the seller's name lower-cased into a product word ("For waters,").
+    #
+    # All five read the MODEL-WRITTEN text only (section cards, lede, analyst
+    # bullets, the numbered top3 rows) and never the fixed template blocks --
+    # testimonials, the "Inside Coherent Market Insights" caps/projects showcase,
+    # CTAs, creds and the footer are identical in every brief, so a jargon hit there
+    # is not a defect anyone can fix. See main_content_html().
+    if lede_html_m:
+        lede_visible = visible_text(lede_html_m.group(1)).strip()
+        fails.extend(lede_leaks(lede_visible, lede_html_m.group(1)))
+
+    main_text = main_content_text(html)
+    warns.extend(overclaim_warnings(main_text))
+    warns.extend(meta_commentary_warnings(main_text))
+    # Mask the lead's own proper nouns first: a product/brand that doubles as a banned
+    # generic word ("Empower 3 software") must not read as jargon; the lowercase
+    # generic use ("we empower teams") is still flagged.
+    warns.extend(banned_word_warnings(mask_entities(main_text, profile)))
+    warns.extend(duplicate_sentence_warnings(main_text))
+    warns.extend(company_case_warnings(main_text, getattr(profile, "company", "")))
 
     # ---- GEOGRAPHY (optional; only when the lead's country is known) ---------
     # Country-first rule, checked on the RENDERED brief: every section is about

@@ -33,6 +33,7 @@ import os
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
 
 STAGES = ("import", "enrich", "generate", "validate", "send")
 
@@ -66,7 +67,8 @@ def stage_import(conn, xlsx: str, campaign: str, kind: str, limit: int) -> list[
     for l in leads:
         db.upsert_lead(conn, email=l["email"], name=l["name"], company=l["company"],
                        market=l["country"], report_name=l.get("topic", ""),
-                       source="xlsx_import", campaign=campaign, kind=kind, commit=False)
+                       source="xlsx_import", campaign=campaign,
+                       kind=kind if l["company"] else "report", commit=False)
         if l["email"].strip().lower() not in existing:
             added += 1
     conn.commit()
@@ -86,6 +88,124 @@ def stage_enrich(conn, leads: list[dict], workers: int, force: bool) -> dict:
 
 
 # ── stage 3: generate ─────────────────────────────────────────────────────────
+def kinds_for_lead(lead: dict, kinds: list[str]) -> list[str]:
+    """A lead with no company information (personal email, no company in the sheet)
+    only gets a report brief on the market it enquired about -- and none at all
+    without one."""
+    if lead.get("company"):
+        return list(kinds)
+    return ["report"] if lead.get("topic") else []
+
+
+_EVIDENCE_ART_FIELDS = ("title", "url", "source", "summary", "query", "bucket", "composite",
+                        "relevancy", "freshness", "importance", "trigger_type",
+                        "event_country", "ev_relevancy", "ev_recency", "ev_age_days",
+                        "ev_reason", "topic_rel", "geo_scope", "text_source")
+
+
+def _evidence_profile(profile) -> dict:
+    return {k: getattr(profile, k, None) for k in
+            ("value_prop", "competitors", "industries", "trigger_queries", "industry_queries")}
+
+
+def _evidence_pool(scored, keep, fallback) -> list[dict]:
+    keep_ids = {id(a) for a in keep}
+    fb_ids = {id(a) for a in fallback}
+    out = []
+    for a in scored:
+        d = {k: getattr(a, k, None) for k in _EVIDENCE_ART_FIELDS}
+        pub = getattr(a, "published", None)
+        d["published"] = pub.isoformat() if hasattr(pub, "isoformat") else pub
+        d["eligible"] = id(a) in keep_ids
+        d["in_fallback"] = id(a) in fb_ids
+        out.append(d)
+    return out
+
+
+def _evidence_used(brief: dict, debug: dict) -> dict:
+    """Per section, the source article. Customer/competition come from build_brief's debug
+    block; industry/market cards carry their own source_url/source_name/date."""
+    used = {}
+    for key, name in (("customer", "Potential Customer"), ("competition", "Competition Outlook")):
+        d = (debug or {}).get(key)
+        if d:
+            used[name] = {"company": d.get("company"), "title": d.get("article"),
+                          "url": d.get("url"), "source": d.get("source"),
+                          "published": d.get("published"),
+                          "free_research": d.get("free_research", "")}
+    for card in (brief or {}).get("industry_outlook") or []:
+        used.setdefault("Industry Outlook", []).append(
+            {"name": card.get("headline"), "title": card.get("headline"),
+             "url": card.get("source_url"), "source": card.get("source_name"),
+             "published": card.get("date")})
+    return used
+
+
+def _country_check(lead: dict, stated_name: str, conn=None, log=_log) -> dict | None:
+    """Compare a lead's STATED country with the HQ country its own website shows.
+    Returns {"stated","website","company"} on a confident mismatch, else None. Never
+    changes the country; never raises (evidence only)."""
+    try:
+        import enrich
+        import regions
+        site = lead.get("website") or ""
+        domain = enrich.domain_of(website=site) if site else ""
+        text = ""
+        if conn is not None and domain:
+            try:
+                import db as _db
+                cached = _db.get_intel(conn, domain)
+                if cached and cached.get("raw_json"):
+                    text = str(json.loads(cached["raw_json"]).get("homepage_text", ""))
+            except Exception:  # noqa: BLE001
+                text = ""
+        hq = enrich.hq_country_from_site(text, domain)
+        p = regions.get_profile(stated_name)
+        stated = (p or {}).get("iso2", "")
+        if hq and stated and hq != stated:
+            log(f"  country check: {lead.get('company', '')} stated {stated}, website says {hq}")
+            return {"stated": stated, "website": hq}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _write_evidence(path: str, ev: dict) -> str:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(ev, f, ensure_ascii=False, indent=1, default=str)
+        return path
+    except Exception:  # noqa: BLE001 -- evidence must never fail a brief
+        return ""
+
+
+def _load_frozen_pool(fname: str):
+    """Articles rebuilt from a saved evidence file in CMI_EVIDENCE_DIR, or None."""
+    d = os.environ.get("CMI_EVIDENCE_DIR")
+    if not d:
+        return None
+    p = os.path.join(d, fname)
+    if not os.path.exists(p):
+        return None
+    from collect import Article
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
+    out = []
+    for r in data.get("pool", []):
+        try:
+            pub = datetime.fromisoformat(r["published"])
+        except Exception:  # noqa: BLE001
+            pub = datetime.now(timezone.utc)
+        out.append(Article(title=r.get("title") or "", url=r.get("url") or "",
+                           source=r.get("source") or "", published=pub,
+                           summary=r.get("summary") or "", query=r.get("query") or "",
+                           bucket=r.get("bucket") or "",
+                           topic_rel=r.get("topic_rel") or 0.0,
+                           geo_scope=r.get("geo_scope") or "",
+                           text_source=r.get("text_source") or ""))
+    return out
+
+
 def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
                    run_id: int, outdir: str) -> list[dict]:
     """Every (lead, kind) pair in one pool. Each brief is stored as it finishes, so a
@@ -98,13 +218,19 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
     import render
     from brief_builder import build_brief
     from collect import collect
-    from score import eligible, is_unsafe_to_cite, score_all
-    from tenant import Profile
+    from score import eligible, fallback_pool, is_unsafe_to_cite, score_all
+    from tenant import ProfileCache
 
+    profile_cache = ProfileCache()
     os.makedirs(outdir, exist_ok=True)
-    jobs = [(l, k) for l in leads for k in kinds]
+    if os.environ.get("CMI_EVIDENCE_DIR"):
+        _log(f"  frozen-evidence mode: reading pools from {os.environ['CMI_EVIDENCE_DIR']}")
+    jobs = [(l, k) for l in leads for k in kinds_for_lead(l, kinds)]
     _log(f"  {len(jobs)} briefs ({len(leads)} leads x {len(kinds)} kind(s)), "
          f"{workers} workers")
+    n_no_co = sum(1 for l in leads if not l["company"])
+    if n_no_co:
+        _log(f"  {n_no_co} lead(s) with no company information: report brief only")
 
     # The leads table is authoritative for each lead's country (country-first
     # evidence filtering). One upfront query keyed by lowercased email, read here
@@ -135,6 +261,15 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
         t0 = time.time()
         row = {"email": lead["email"], "company": lead["company"], "kind": kind,
                "country": ""}
+        slug = "".join(c for c in (lead["company"] or lead.get("topic", "")).lower()
+                       if c.isalnum())[:20]
+        who = "".join(c for c in lead["name"].lower() if c.isalnum())[:12] or "there"
+        path = os.path.join(outdir, f"cmi_{slug}_{who}_{kind}.html")
+        ev_path = path[:-len(".html")] + ".evidence.json"
+        ev = {"lead": {"email": lead["email"], "company": lead["company"],
+                       "name": lead["name"], "kind": kind,
+                       "topic": lead.get("topic", "")},
+              "build_log": [], "compose_log": []}
         try:
             # DB country wins over the sheet's own value; an unresolved DB country
             # means there is no defensible place for this brief — skip it rather
@@ -150,15 +285,34 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
                 else lead["country"]
             country = config.get_country(country_name)
             row["country"] = country["name"]
+            ev["lead"]["country"] = country["name"]
+            if db_source == "stated" and db_country:
+                _cc = _country_check(lead, db_country, conn=db.get_conn())
+                if _cc:
+                    ev["lead"]["country_check"] = _cc
             # get_conn() is safe to call from a worker thread -- it hands back a
             # connection cached per-thread (see db.py), never the main thread's
             # connection object. Passed through so from_company can reuse the
             # company_intel homepage cache stage_enrich already populated, instead of
             # re-fetching the same homepage live on every brief.
             worker_conn = db.get_conn()
-            profile = Profile.from_company(lead["company"], lead["website"],
-                                           lead["name"], country["name"], conn=worker_conn)
-            arts = collect(profile, country)
+            # One Profile per lead per run (and persisted in profile_cache): the signal
+            # and report briefs of a lead must describe the same business.
+            profile = profile_cache.get(lead["company"], lead["website"],
+                                        lead["name"], country["name"], conn=worker_conn,
+                                        topic=lead.get("topic", ""))
+            frozen = _load_frozen_pool(os.path.basename(ev_path))
+            ev["profile"] = _evidence_profile(profile)
+            arts = frozen if frozen is not None else collect(profile, country, conn=worker_conn)
+            try:
+                import collect as _collect_mod
+                # LAST_HARVESTED is module-global: read right after this lead's collect()
+                # (another worker can still overwrite it in between -- diagnostics only).
+                ev["searches"] = {
+                    "planned": _collect_mod.plan_searches(profile, country),
+                    "harvested": list(getattr(_collect_mod, "LAST_HARVESTED", []))}
+            except Exception:  # noqa: BLE001 -- evidence only
+                pass
             # A report brief is about the market the lead enquired about, not just the
             # seller's own news. Without this, `market_topic` only re-LABELS whatever
             # the company queries returned: a Bharat Forge brief on the global drone
@@ -166,25 +320,55 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             # named no drone company. Collect for the topic itself as well.
             topic_q = lead.get("topic", "") if kind == "report" else ""
             topic_arts = []
-            if topic_q:
+            if topic_q and frozen is None:
+                import collect as _collect_t
                 from collect import collect_topic
 
                 try:
-                    topic_arts = collect_topic(topic_q, country)
+                    # Local-language search of the topic: English news misses most of a
+                    # niche market's coverage in non-English countries.
+                    local_topic = ""
+                    if profile.local_language:
+                        local_topic = _collect_t.translate_topic(
+                            _collect_t.topic_subject(topic_q, _collect_t._lead_iso2(country)),
+                            profile.local_language)
+                    topic_arts = collect_topic(topic_q, country, local_topic=local_topic)
                 except Exception:  # noqa: BLE001 -- topic news is a bonus, not required
                     topic_arts = []
-            # Country-first evidence filter over ALL articles -- company queries AND
-            # topic queries alike (applied AFTER the topic merge): keep the lead's
-            # own country, drop pure other-country evidence (explicit-link rule),
-            # keep no-geo industry articles, and only fall back to same-REGION
-            # countries when trigger+competitor evidence runs dry. Never the
-            # unfiltered pool. A Global lead is unfiltered, as before.
+            # Country-first evidence filter, company and topic articles SEPARATELY: keep
+            # the lead's own country, drop pure other-country evidence (explicit-link
+            # rule), keep no-geo industry articles, and only fall back to same-REGION
+            # countries when trigger+competitor evidence runs dry. Topic news widens
+            # country -> region -> global (on-topic only), see geo.filter_topic_for_lead.
+            # A Global lead is unfiltered, as before.
+            if not geo.is_global(country) and frozen is None:
+                arts, _geo_scope = geo.filter_for_lead(arts, country, profile=profile,
+                                                       conn=worker_conn)
+                if topic_arts:
+                    import score as _score
+                    topic_arts, ev["topic_scope"] = geo.filter_topic_for_lead(
+                        topic_arts, country,
+                        _score.topic_tokens(topic_q, _score.topic_drop_words(profile.market)),
+                        profile=profile, conn=worker_conn)
             arts = arts + topic_arts
-            if not geo.is_global(country):
-                arts, _geo_scope = geo.filter_for_lead(arts, country)
             scored = score_all(arts, profile, topic=topic_q)
+            # Real article text for the top-ranked items (feed summaries are headlines).
+            # Skipped in frozen replay so replay stays prompt-only.
+            if config.FETCH_ARTICLE_TEXT and frozen is None:
+                try:
+                    from collect import enrich_texts
+                    ev["texts_fetched"] = enrich_texts(scored)
+                except Exception:  # noqa: BLE001 -- never fail the brief
+                    ev["texts_fetched"] = 0
             keep = eligible(scored)
             topic = lead.get("topic", "") if kind == "report" else ""
+            if topic:
+                # The seller-relevance gate must not drop the on-topic evidence the topic
+                # search was run to find.
+                import score as _score
+                _kept = {id(a) for a in keep}
+                keep = keep + [a for a in scored if a.topic_rel >= _score.TOPICAL
+                               and not is_unsafe_to_cite(a) and id(a) not in _kept]
             # `keep or scored`: a thin-coverage lead can score everything below
             # min_composite, and falling back to the whole unfiltered pool rather than
             # an empty brief is the right call for a low composite score -- but
@@ -192,17 +376,25 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             # never safe to put in front of a reader (a rival firm's own report PR, or
             # stock-ticker churn). Filter those out of the fallback pool too, so a thin
             # lead can't silently reintroduce exactly what eligible() just removed.
-            fallback = [a for a in scored if not is_unsafe_to_cite(a)]
-            brief = build_brief(keep or fallback, profile, log=lambda *_: None,
+            # It must also clear the relevance gate's absolute floor (score.fallback_pool),
+            # or unrelated news the gate removed comes straight back through here.
+            fallback = fallback_pool(scored)
+            ev["pool"] = _evidence_pool(scored, keep, fallback)
+            ev["passed_to_builder"] = "keep" if keep else "fallback"
+            brief = build_brief(keep or fallback, profile,
+                                log=lambda *a: ev["build_log"].append(" ".join(map(str, a))),
                                 market_topic=topic)
+            debug = brief[1] if isinstance(brief, tuple) and len(brief) > 1 else {}
             brief = brief[0] if isinstance(brief, tuple) else brief
+            ev["used"] = _evidence_used(brief, debug)
             ctx = compose.build_context(profile, brief, kind, market_topic=topic,
-                                        log=lambda *_: None)
+                                        log=lambda *a: ev["compose_log"].append(" ".join(map(str, a))))
+            # Nothing on-topic and no buyer: an empty brief ("covers 0 developments") must
+            # not be rendered or sent -- record it as an error so the lead is skipped.
+            if not ctx.get("sections"):
+                raise ValueError("no usable content: no section passed the evidence gates")
             html = render.render(ctx, "cmi_brief.html")
 
-            slug = "".join(c for c in lead["company"].lower() if c.isalnum())[:20]
-            who = "".join(c for c in lead["name"].lower() if c.isalnum())[:12] or "there"
-            path = os.path.join(outdir, f"cmi_{slug}_{who}_{kind}.html")
             with open(path, "w", encoding="utf-8") as f:
                 f.write(html)
 
@@ -211,6 +403,10 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
         except Exception as e:  # noqa: BLE001 -- one bad lead must not lose the batch
             row.update(html="", topic="", path="", profile=None,
                        secs=round(time.time() - t0, 1), error=f"{type(e).__name__}: {e}")
+        finally:
+            if "pool" in ev:
+                ev["error"] = row.get("error", "")
+                row["evidence_path"] = _write_evidence(ev_path, ev)
         return row
 
     results = []
