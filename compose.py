@@ -90,7 +90,7 @@ def analyst_bullets(profile, signal: str, extra: str = "") -> list[str]:
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
             f"{_ctx(profile)}"
             f"SIGNAL:\n{signal}\n{extra}\n\n"
-            'Return JSON {"bullets":["<b>lead.</b> support.", "...", "..."]} with exactly 3.')
+            'Return JSON {"bullets":["<b>judgement.</b> support.", "...", "..."]} with exactly 3 bullets.')
     data = voice.chat_json_guarded(system, user, max_tokens=900, profile=profile) or {}
     out = [_clean(b) for b in (data.get("bullets") or []) if str(b).strip()]
     return out[:3]
@@ -114,9 +114,9 @@ def analyst_bullets_multi(profile, signals: list[str]) -> list[list[str]]:
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
             f"{_ctx(profile)}\n"
             f"{blocks}\n\n"
-            'Return JSON {"items":[{"index":<int>,"bullets":["<b>lead.</b> support.", "...", "..."]}]} '
-            "-- one entry per signal index above, each with exactly 3 bullets. Each signal's "
-            "bullets must follow only from THAT signal, never mix content between signals.")
+            'Return JSON {"items":[{"index":0,"bullets":["<b>judgement.</b> support.", "...", "..."]}]} '
+            "with one entry per SIGNAL, each with exactly 3 bullets. Each SIGNAL's bullets use only "
+            "that SIGNAL.")
     data = voice.chat_json_guarded(system, user, max_tokens=900 * len(signals), profile=profile) or {}
     items = data.get("items") if isinstance(data, dict) else None
     out: list[list[str]] = [[] for _ in signals]
@@ -315,13 +315,11 @@ def editorial(profile, sections: list[dict]) -> tuple[str, list[dict]]:
             f"MARKET: {getattr(profile, 'market', 'Global')}\n"
             f"VERTICALS TRACKED: {', '.join(profile.industries)}\n"
             f"SECTIONS:\n{body}\n\n"
-            'Return JSON {"themes":["...","..."],"top3":["...","...","..."]}. '
-            "themes has one entry per section, in the same order as SECTIONS: a phrase of 2 to 6 "
-            "lowercase words naming what that section is about in general terms, for example "
-            "\"expanding production capacity\". No company, "
-            "product, person or publication names, no numbers. Use an empty string if unsure. "
-            "Each top3 line is a bolded claim in <b></b> then one plain "
-            "sentence on why it matters. Same order as SECTIONS.")
+            'Return JSON {"themes":["...","..."],"top3":["...","...","..."]}, one entry per section '
+            "in the order of SECTIONS.\n"
+            "- themes: 2 to 6 lowercase words saying what the section is about, in general terms. "
+            "No names and no numbers. Use \"\" if unsure.\n"
+            "- top3: a short claim in <b></b>, then one plain sentence on why it matters.")
     opening = f"This week's brief covers {count_word} development{'s' if n != 1 else ''}:"
 
     data = voice.chat_json_guarded(system, user, max_tokens=1000, profile=profile) or {}

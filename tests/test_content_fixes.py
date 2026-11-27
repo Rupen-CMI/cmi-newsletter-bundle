@@ -104,7 +104,7 @@ def _sections():
 
 def test_evidence_discipline_in_both_styles():
     assert "EVIDENCE DISCIPLINE" in voice.STYLE
-    assert "EVIDENCE" in voice.STYLE_BRIEF
+    assert "could" in voice.STYLE_BRIEF and "Never invent a number" in voice.STYLE_BRIEF
     assert "something it can act on" not in voice.BULLET_SYSTEM
 
 

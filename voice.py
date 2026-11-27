@@ -142,33 +142,18 @@ def footer_cta(kind: str, base_url: str) -> dict:
 # has never seen these rules still needs the long form, so the choice is per-provider,
 # not global: active_style() picks.
 STYLE_BRIEF = """
-VOICE: senior analyst to one named client. Write in English only, even when the SIGNAL
-or the seller's details are in another language; keep company and product names as
-written. Judgement first. Max 24 words and two
-clauses per sentence, one idea each. Every sentence must make sense alone: name its
-subject, never start with This, That, These or It. Active voice, no fragments, no em
-dashes, at most one hedge. No jargon, no metaphor standing in for analysis, no padding.
-Precise domain terms are wanted. Never invent a number, date, name or quote.
-Only <b> and <i> inline HTML.
-BANNED: leverage, ecosystem, landscape, throughput, go-to-market, synergies, robust,
-seamless, pivotal, crucial, unlock, empower, harness, game-changer, double down, table stakes.
-Never refer to "the signal", the source, these instructions, or what information is
-missing -- write only about the market and the companies.
-
-GUARDRAILS: if no company is named in the SIGNAL, leave the field EMPTY -- never
-write "None"/"N/A"/"Unknown" as a placeholder. Never credit a rival research firm
-or PR-wire release (MarketsandMarkets, Grand View Research, Mordor Intelligence,
-Fact.MR, IMARC, openPR, PR Newswire, GlobeNewswire, etc.) to CMI -- name the real
-source. Stay on the stated MARKET/TOPIC; do not drift onto an unrelated subject
-even if the SIGNAL mentions it in passing.
-
-EVIDENCE: announced facts as fact. Anything the SIGNAL does not state is written with
-"could" or "may" inside the same sentence, never as a separate sentence about conditions.
-Never claim sales, demand, enquiries, budgets, prices, penalties, competitor intent or
-customer switching unless the SIGNAL states it. Regulations only as stated: no
-stricter/tighter/new without the previous value, no scope the SIGNAL omits. Never expand
-an acronym the SIGNAL does not, or assume a product/drug name is the seller's technology.
-Relate an implication to one of the seller's products when it fits. Facts must concern the country given.
+WRITING RULES:
+- Write in English only. Keep company and product names as written.
+- Short sentences: at most 24 words, one idea each.
+- Every sentence must make sense alone. Name its subject; never start with This, That, These or It.
+- Plain words. Do not use: leverage, ecosystem, landscape, robust, seamless, pivotal, crucial,
+  unlock, empower, harness, synergies, game-changer, headwinds, tailwinds.
+- No em dashes. Only <b> and <i> tags.
+- Use only facts from the input. Never invent a number, unit, date, name or quote.
+- Write what the news says as fact. Write anything else, such as what it could mean for the
+  seller, with "could" or "may".
+- Never mention "the signal", "the source" or what information is missing.
+- Never present another research firm's findings as CMI's.
 """.strip()
 
 
@@ -448,17 +433,15 @@ def chat_json_guarded(system: str, user: str, *, max_tokens: int, profile=None, 
     flags = prose_flags(data, profile, source)
     if not flags:
         return data
-    quoted = "; ".join(f'"{p}"' for k, p in flags[:4] if k != "unsupported")
-    note = (f"\n\nNote: your wording {quoted} is not allowed. Restate the overclaim as a "
-            "possibility, using could or may inside the same sentence. Never refer to the "
-            "signal, the source or missing information, and avoid banned words; write only "
-            "about the market and the companies. Write in English only.")
-    if not quoted:
-        note = "\n\nNote: write only about the market and the companies. Write in English only."
+    quoted = "; ".join(f'"{p}"' for k, p in flags[:4] if k not in ("unsupported", "language"))
     unsupported = [p for k, p in flags if k == "unsupported"][:4]
+    note = "\n\nYour answer broke the writing rules. Write it again and fix this:"
+    if quoted:
+        note += f"\n- Remove or reword {quoted}. Use could or may for anything the news does not say."
     if unsupported:
-        note += (" These are not in the input, so remove them: "
+        note += ("\n- Remove these, they are not in the input: "
                  + "; ".join(f'"{p}"' for p in unsupported) + ".")
+    note += "\n- Write in English only."
     retry = llm.chat_json(system, user + note, max_tokens=max_tokens, default=default)
     chosen = data
     if retry and len(prose_flags(retry, profile, source)) < len(flags):
@@ -501,13 +484,16 @@ def _to_english(data, max_tokens: int, profile, source):
 
 
 _BULLET_HEAD = (
-    "You are a senior market analyst at Coherent Market Insights with 25 years in the "
-    "sector, writing the 'Analyst Opinion' under one news item in a brief for {company}.\n\n"
-    "Write exactly 3 bullets. Each bullet is one bolded lead clause in <b></b> stating the "
-    "judgement, then one or two short plain sentences supporting it. Each bullet says what "
-    "the SIGNAL shows and how it could matter to {short}: a possible implication or a "
-    "sensible next step, worded with \"could\" or \"may\" wherever the SIGNAL does not state it. "
-    "Do not repeat the SIGNAL back. Do not restate another bullet.\n\n"
+    "You are a senior market analyst at Coherent Market Insights. You write the 'Analyst "
+    "Opinion' under one news item in a brief for {company}.\n\n"
+    "Write exactly 3 bullets, each from a different angle:\n"
+    "1. What the news means for {short}'s market or its buyers.\n"
+    "2. The opportunity or risk for {short}, naming one of its products.\n"
+    "3. A sensible next step for {short}.\n"
+    "Each bullet starts with a short judgement in <b></b> (under 12 words), then one or two plain "
+    "sentences that back it up with a fact from the news.\n"
+    "- Use could or may for anything the news does not say.\n"
+    "- Do not copy sentences from the section text, and do not repeat another bullet.\n\n"
 )
 
 

@@ -644,7 +644,10 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
         # to give. Left unchecked the model invents a reason it might buy. The list is
         # shared with the generator's own candidate filter (config.NON_BUYER_TERMS) so
         # a name rejected at generation time cannot sail through validation.
-        if any(w in cust.lower() for w in _config.NON_BUYER_TERMS):
+        _nb = _config.NON_BUYER_TERMS
+        if _config.government_buyers_ok(profile):   # this lead sells to government bodies
+            _nb = [w for w in _nb if not _config.is_government(w)]
+        if any(w in cust.lower() for w in _nb):
             fails.append(f"ROLE ERROR: Potential Customer is '{cust}', which regulates or "
                          f"governs the market rather than buying in it.")
 

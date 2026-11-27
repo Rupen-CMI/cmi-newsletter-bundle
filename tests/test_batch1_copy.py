@@ -57,7 +57,7 @@ def test_write_card_prompt_and_source_text(monkeypatch, kind):
     enr = {"wikipedia": "Acme is a firm.", "recent_news": ["Morrison stake"]}
     card = bb._write_card(a, "Acme", kind, enr, _profile())
     assert "RECENT COMPANY HEADLINES" not in seen["p"] and "Morrison" not in seen["p"]
-    assert "Never combine the SIGNAL with other" in seen["p"] and "FREE RESEARCH is only for who the company is" in seen["p"]
+    assert "events that are not in the SIGNAL" in seen["p"] and "Use FREE RESEARCH only to say who" in seen["p"]
     assert card["_source_text"].startswith("Acme buys Beta. Deal worth")
 
 

@@ -14,6 +14,7 @@ tenant-specific facts come from a `tenant.Profile`, so this works for ANY seller
 """
 from __future__ import annotations
 import re
+import concurrent.futures as cf
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -119,24 +120,21 @@ def _date_label(dt: datetime) -> str:
     return f"{dt.strftime('%b')} {dt.day}"
 
 
-_SCORE_NOTE = (" RELEVANCY (0-1) is how well a signal fits what it was searched for and RECENCY (0-1) how "
-               "fresh it is; when signals are otherwise comparable prefer higher scores, and avoid a signal "
-               "with RELEVANCY below 0.30 unless nothing else fits.")
+_SCORE_NOTE = "\nFIT (0 to 1) is how well an item matches the seller. Prefer items with high FIT."
 
 
 def _scores_line(a: Article) -> str:
-    return (f"RELEVANCY: {a.ev_relevancy:.2f} ({a.ev_reason}) | "
-            f"RECENCY: {a.ev_recency:.2f} ({a.ev_age_days:.0f} days old)")
+    return f"FIT: {a.ev_relevancy:.2f} | AGE: {a.ev_age_days:.0f} days"
 
 
 def _cands_block(arts: list[Article]) -> str:
     lines = []
     for i, a in enumerate(arts):
         # Topic news admitted from outside the lead's country: the writer must say where.
-        loc = (" | LOCATION: outside the reader's country — say where it happened"
+        loc = (" | OUTSIDE THE READER'S COUNTRY: say where it happened"
                if getattr(a, "geo_scope", "") in ("region", "global") else "")
         lines.append(f"[{i}] TITLE: {a.title}\n    SOURCE: {a.source} | DATE: {_date_label(a.published)}"
-                     f" | TRIGGER: {a.trigger_type or 'none'} | QUERY: {a.query} | {_scores_line(a)}{loc}\n"
+                     f" | {_scores_line(a)}{loc}\n"
                      f"    SUMMARY: {a.summary[:280]}")
     return "\n".join(lines)
 
@@ -284,19 +282,24 @@ def _in_lead_country(a: Article, profile) -> bool:
     return bool(ev and ev["iso2"] == lead["iso2"])
 
 
-# ── Triage: classify each trigger company as BUYER vs PEER (competitor) vs OTHER ─
-def triage_triggers(triggers: list[Article], profile):
-    """One LLM call. Returns {index: (company_name, relationship)} over the top candidates.
-    'buyer' = would purchase the seller's product; 'peer' = sells a competing product
-    (a rival); 'other' = neither. This is what keeps a rival's funding round OUT of the
-    Potential Customer slot and INTO Competition Outlook."""
-    cands = triggers[:10]
-    if not cands:
-        return {}, cands
-    # Prompt = triage-lab variant E_balanced (session_scratch/triage_lab.py): best of five
-    # variants scored on the 97 stored triage prompts (326 labelled signals) -- 83.4% vs
-    # 82.5% for the old wording. The old "if unsure choose other" tail was strictly worse
-    # (79.8%), and a two-yes/no-question decomposition collapsed to 57.1%.
+# The v4 model was fine-tuned on this exact triage prompt (training_data/v4 kind "triage_role",
+# 304 examples; prompt = triage-lab variant E_balanced). Keep it word-for-word, like _CHECK_*.
+# Measured 2026-11-26 on the 906 held-out labels in training_data/v4/test_triage.jsonl
+# (session_scratch/triage_bench.py): this prompt 80.6% accuracy, buyer precision 0.49; adding
+# event_country/would_buy fields 77.7% / 0.44; a short rewrite 71.1% / 0.36. Country and the
+# product a buyer would buy come from the separate pick call instead (_pick_buyer).
+def _triage_block(arts: list[Article]) -> str:
+    """The SIGNALS block in the format the triage training data used."""
+    lines = []
+    for i, a in enumerate(arts):
+        lines.append(f"[{i}] TITLE: {a.title}\n    SOURCE: {a.source} | DATE: {_date_label(a.published)}"
+                     f" | TRIGGER: {a.trigger_type or 'none'} | QUERY: {a.query} | SCORE: {a.composite:.4f}\n"
+                     f"    SUMMARY: {a.summary[:280]}")
+    return "\n".join(lines)
+
+
+def _triage_prompt(profile, block: str) -> tuple[str, str]:
+    """(system, user) for triage_triggers; `block` is the SIGNALS text."""
     system = (
         "You are a B2B sales analyst. For each news item you decide which company the item is about and how "
         "that company relates to the SELLER.\n\n"
@@ -323,13 +326,22 @@ def triage_triggers(triggers: list[Article], profile):
         "a 'buyer'. Use 'other' only when neither is true."
     )
     user = (f"SELLER sells: {profile.value_prop}\nKnown competitors: {', '.join(profile.competitors) or '—'}\n\n"
-            f"SIGNALS:\n{_cands_block(cands)}\n\n"
-            "Return JSON {\"items\":[{\"index\":<int>,\"company_name\":\"...\",\"relationship\":\"buyer|peer|other\","
-            "\"event_country\":\"...\",\"would_buy\":\"...\"}]}"
-            " — one entry per signal index above. \"event_country\" is the country where the event in the item "
-            "takes place, as its English country name, or \"unknown\" when the item does not "
-            "make it clear. \"would_buy\" is which of the seller's products this company would buy because of "
-            "this news, in a few words, or \"\" if none." + _SCORE_NOTE)
+            f"SIGNALS:\n{block}\n\n"
+            "Return JSON {\"items\":[{\"index\":<int>,\"company_name\":\"...\",\"relationship\":\"buyer|peer|other\"}]}"
+            " — one entry per signal index above.")
+    return system, user
+
+
+# ── Triage: classify each trigger company as BUYER vs PEER (competitor) vs OTHER ─
+def triage_triggers(triggers: list[Article], profile):
+    """One LLM call. Returns {index: (company_name, relationship)} over the first 10 candidates.
+    'buyer' = would purchase the seller's product; 'peer' = sells a competing product
+    (a rival); 'other' = neither. This is what keeps a rival's funding round OUT of the
+    Potential Customer slot and INTO Competition Outlook."""
+    cands = triggers[:10]
+    if not cands:
+        return {}, cands
+    system, user = _triage_prompt(profile, _triage_block(cands))
     data = llm.chat_json(system, user, max_tokens=800, default={})
     rel: dict[int, tuple[str, str]] = {}
     for it in (data.get("items") or []):
@@ -343,19 +355,81 @@ def triage_triggers(triggers: list[Article], profile):
             if is_self(name, profile):
                 r = "self"      # the seller's own news is never a customer, peer or rival
             rel[i] = (name, r)
-            ec = it.get("event_country")
-            cands[i].event_country = ec.strip() if isinstance(ec, str) else ""
-            wb = it.get("would_buy")
-            cands[i].would_buy = wb.strip() if isinstance(wb, str) else ""
     return rel, cands
 
 
+def _pick_buyer(buyers: list[tuple[Article, str]], profile) -> tuple[int, str, str]:
+    """One LLM call: the model picks the best of the labelled buyers. Returns
+    (index into `buyers` or -1 for none, event_country, would_buy)."""
+    market = (getattr(profile, "market", "") or "").strip() or "the reader's country"
+    system = (
+        f"You are a B2B sales analyst for {profile.company} ({profile.short}). {profile.short} sells: "
+        f"{profile.value_prop}\n"
+        f"BUYER INDUSTRIES: {', '.join(profile.industries)}\n\n"
+        f"Each CANDIDATE is a company in the news that may buy from {profile.short}. Pick the ONE most "
+        f"likely to buy from {profile.short} soon, because of its news.\n"
+        "A good pick:\n"
+        "- has its own business in one of the buyer industries;\n"
+        "- does the action itself (it is not being bought or sold);\n"
+        f"- acts in {market};\n"
+        f"- has news that creates a clear need for one {profile.short} product.\n"
+        "If no candidate fits, answer -1."
+    )
+    lines = "\n".join(f"[{k}] {name} | {a.title} | {(a.summary or '')[:160]}"
+                      for k, (a, name) in enumerate(buyers))
+    user = (f"CANDIDATES:\n{lines}\n\n"
+            "Return JSON {\"best\": <index or -1>, \"event_country\": \"\", \"would_buy\": \"\"}\n"
+            "- event_country: the country where the picked company's news happens, in English, or \"unknown\".\n"
+            f"- would_buy: the {profile.short} product it could buy and why, in one short phrase.")
+    data = llm.chat_json(system, user, max_tokens=200, default={})
+    k = data.get("best") if isinstance(data, dict) else None
+    if k == -1:
+        return -1, "", ""
+    if not isinstance(k, int) or not 0 <= k < len(buyers):
+        k = 0     # a failed or unparseable reply falls back to the top-ranked buyer
+    ec, wb = data.get("event_country"), data.get("would_buy")
+    return k, (ec.strip() if isinstance(ec, str) else ""), (wb.strip() if isinstance(wb, str) else "")
+
+
 # ── 1. POTENTIAL CUSTOMER — best BUYER (never a peer/rival), free-enrich, write ─
-_TRIAGE_BATCH = 10   # triage_triggers judges this many per call
-_TRIAGE_MAX = 30     # stop looking for a buyer after this many candidates
+# Buying-event verbs in the local-language editions the pipeline searches. score's trigger
+# lexicon is English only, so "MGTA investit dans le broyage des déblais" had no trigger_type.
+_LOCAL_EVENT_RE = re.compile(
+    r"\b(investit|investissement|lance|ouvre|inaugure|rach[eè]te|acquiert|s'allie|signe|remporte|"
+    r"invierte|inversi[oó]n|lanza|abre|adquiere|inaugura|firma|"
+    r"investiert|er[oö]ffnet|[uü]bernimmt|startet|baut|"
+    r"investeert|opent|neemt over|lanceert|"
+    r"investe|lancia|apre|acquisisce|"
+    r"yat[ıi]r[ıi]m|fabrika|a[cç][ıi]l[ıi]ş)\b", re.I)
 
 
-def build_customer(triggers: list[Article], profile, log=print):
+_APPOINT_RE = re.compile(
+    r"\b(appoints?|appointed|appointment|names? (?:new )?(?:\w+ ){0,3}(?:ceo|cfo|cto|coo|chief|president|"
+    r"head|director|chair\w*|md)|hires?|hired|joins as|steps down|resigns|promoted|new (?:ceo|cfo|chief)|"
+    r"nomme|nommé|nombra|nombramiento|ernennt|ernannt|benoemd|benoemt|nomina|nominato|atadı|atandı)\b",
+    re.I)
+
+
+def _is_appointment(a: Article) -> bool:
+    """A staff appointment headline: a person's move, not a market development."""
+    return bool(_APPOINT_RE.search(a.title or ""))
+
+
+def _has_event(a: Article) -> bool:
+    return bool(a.trigger_type) or bool(_LOCAL_EVENT_RE.search(a.title or ""))
+
+
+_TRIAGE_BATCH = 10   # triage_triggers judges this many per call (its training size)
+_TRIAGE_POOL = 40    # the scorer's top items (buyer + competitor searches) the model labels
+
+
+def build_customer(triggers: list[Article], profile, log=print, competitor_arts=None):
+    gov_ok = config.government_buyers_ok(profile)
+    if not gov_ok:
+        kept = [a for a in triggers if not config.is_government(a.title)]
+        if len(kept) < len(triggers):
+            log(f"    · dropped {len(triggers) - len(kept)} government items (not a buyer for this lead)")
+        triggers = kept
 
     def _looks_like_seller_category(name: str, art: Article) -> bool:
         """True if this candidate is in the seller's OWN trade rather than a buyer.
@@ -383,6 +457,8 @@ def build_customer(triggers: list[Article], profile, log=print):
             "cdsco", "dcgi", "fda", "court", "tribunal", "parliament",
             "association", "council", "committee", "commission", "board of",
             "department of", "task force", "research institute", "journal"))
+        if gov_ok:      # this lead sells to government: a municipality is a real buyer
+            non_buyers = [w for w in non_buyers if not config.is_government(w)]
         if any(w in (name or "").lower() for w in non_buyers):
             return True
         # Nor is a company whose news is about selling the seller's own product type.
@@ -414,48 +490,59 @@ def build_customer(triggers: list[Article], profile, log=print):
         hay = f"{name} {art.title} {art.summary[:300]}".lower()
         return any(w in hay for w in _ind_words)
 
-    # Buyers only (in composite order). The old fallback to 'other' picked companies in
-    # unrelated trades (a sacks plant for a rainfall seller): no buyer -> no card.
-    def _pick(rel, cands):
-        for i, a in enumerate(cands):
-            name, r = rel.get(i, ("", "other"))
-            if r != "buyer":
-                continue
-            # A truncated headline is not a company name. When triage returned nothing
-            # for this index the old fallback was a.title[:48], which rendered
-            # "Neogen raises Rs.600 crore, Dhanuka ratings held," as the Potential
-            # Customer. Skip instead: an unnamed candidate cannot be written up.
-            if not name or _looks_like_headline(name):
-                continue
-            if not getattr(a, "would_buy", ""):
-                log(f"    · skipping '{name[:40]}' — no product it would buy")
-                continue
-            if not _in_lead_country(a, profile):
-                log(f"    · skipping '{name[:40]}' — not in the lead's country")
-                continue
-            if _foreign_event(a, profile):
-                log(f"    · skipping '{name[:40]}' — event is in {a.event_country}, not the lead's country")
-                continue
-            if _looks_like_seller_category(name, a):
-                log(f"    · skipping '{name[:40]}' — reads as a rival/supplier, not a buyer")
-                continue
-            if not _matches_buyer_industry(name, a):
-                log(f"    · skipping '{name[:40]}' — no tie to a curated buyer vertical")
-                continue
-            return a, name
-        return None
-
-    # Triage ten at a time. The top ten by score were often all grant schemes or
-    # ministry news (Grow Partners) while a real buyer sat at rank 18, so keep going
-    # until a buyer is found or _TRIAGE_MAX candidates have been judged.
-    ranked = _rank_by_evidence(triggers)
-    chosen, peers = None, []
-    for start in range(0, min(len(ranked), _TRIAGE_MAX), _TRIAGE_BATCH):
-        rel, cands = triage_triggers(ranked[start:], profile)
-        peers += [(cands[i], name) for i, (name, r) in rel.items() if r == "peer"]
-        chosen = _pick(rel, cands)
-        if chosen:
+    # The scorer only filters: the top _TRIAGE_POOL items (event items first) go to the model,
+    # labelled 10 per call -- the size it was trained on; one 40-item call drifted (0 buyers
+    # for one lead, 20 of 40 for another, session_scratch/triage_one_call.py) -- with the 4
+    # calls in parallel. Then the model picks the best buyer itself. Measured on the 15 test
+    # leads: the scorer's own top 10 held 0 real buyers for 3 leads, and the model's best picks
+    # sat at ranks 16, 21 and 40 (session_scratch/triage_bench.py).
+    # One pool, one classification: half from the buyer searches, half from the competitor
+    # searches, so every item is labelled buyer / peer / other once and both sections draw on
+    # the same labels. A short side's spare places go to the other side.
+    ranked = sorted(_rank_by_evidence(triggers), key=lambda a: 0 if _has_event(a) else 1)
+    comp_ranked = _rank_by_evidence([a for a in (competitor_arts or [])
+                                     if not config.is_government(a.title)])
+    half = _TRIAGE_POOL // 2 if comp_ranked else _TRIAGE_POOL
+    n_comp = min(len(comp_ranked), _TRIAGE_POOL - min(len(ranked), half))
+    pool = ranked[:_TRIAGE_POOL - n_comp] + comp_ranked[:n_comp]
+    batches = [pool[s:s + _TRIAGE_BATCH] for s in range(0, len(pool), _TRIAGE_BATCH)]
+    with cf.ThreadPoolExecutor(max_workers=max(1, len(batches))) as ex:
+        results = list(ex.map(lambda b: triage_triggers(b, profile), batches))
+    peers, buyers = [], []
+    for bi, (rel, cands) in enumerate(results):
+        for i, a in enumerate(cands):     # every label in the build log, so a miss can be traced
+            n, r = rel.get(i, ("", "-"))
+            log(f"    · triage [{bi * _TRIAGE_BATCH + i}] {r}: {n[:30] or '—'} | {a.title[:60]}")
+            if r == "peer":
+                peers.append((a, n))
+            elif r == "buyer":
+                # A truncated headline is not a company name ("Neogen raises Rs.600 crore,
+                # Dhanuka ratings held," once rendered as the Potential Customer).
+                if not n or _looks_like_headline(n):
+                    continue
+                if _looks_like_seller_category(n, a):
+                    log(f"    · skipping '{n[:40]}' — reads as a rival/supplier, not a buyer")
+                    continue
+                if not _matches_buyer_industry(n, a):
+                    log(f"    · skipping '{n[:40]}' — no tie to a curated buyer vertical")
+                    continue
+                buyers.append((a, n))
+    chosen = None
+    for _ in range(3):     # a pick that fails the country check is removed and the model re-picks
+        if not buyers:
             break
+        k, ec, wb = _pick_buyer(buyers, profile)
+        if k < 0:
+            log("    · pick: no buyer fits")
+            break
+        a, name = buyers.pop(k)
+        a.event_country, a.would_buy = ec, wb
+        if not _in_lead_country(a, profile) or _foreign_event(a, profile):
+            log(f"    · pick '{name[:40]}' skipped — event is in {ec or 'another country'}")
+            continue
+        log(f"    · pick: {name} | would buy: {wb[:60]}")
+        chosen = (a, name)
+        break
     if not chosen:
         return None, None, peers
     art, company = chosen
@@ -481,15 +568,15 @@ def triage_industry_fit(cands: list[Article], profile) -> list[Article]:
     if len(top) <= 1:
         return cands
     system = (
-        f"You are a sales-intelligence editor for {profile.company} ({profile.short}), which sells "
-        f"{profile.value_prop} Score how well each news signal actually connects to what the seller "
-        "specifically sells -- not just its broad industry. A story about the seller's exact niche is a 'high' "
-        "fit; a story that only shares a broad vertical label (e.g. any hospital news for a therapy-specific "
-        "seller) with no real connection to the specific product/segment is 'low', even if it looks on-topic."
+        f"You are a market editor for {profile.company} ({profile.short}). {profile.short} sells: "
+        f"{profile.value_prop}\n"
+        "Rate how closely each SIGNAL connects to what the seller sells.\n"
+        "- high: it is about the seller's exact product area.\n"
+        "- low: it only shares a broad industry with the seller."
     )
     user = (
         f"SIGNALS:\n{_cands_block(top)}\n\n"
-        "Return JSON {\"items\":[{\"index\":<int>,\"fit\":\"high|medium|low\"}]} — one entry per signal index above."
+        "Return JSON {\"items\":[{\"index\":0,\"fit\":\"high|medium|low\"}]} with one entry per SIGNAL."
         + _SCORE_NOTE
     )
     data = llm.chat_json(system, user, max_tokens=400, default={})
@@ -541,7 +628,7 @@ def _competitive_move_check(a: Article, competitor: str, profile) -> bool:
     return bool(isinstance(data, dict) and data.get("real_competitive_move") is True)
 
 
-_COMPETITION_JUDGE_TOP = 8  # candidates sent to the competitive-move check
+_COMPETITION_JUDGE_TOP = 24  # candidates sent (in parallel) to the competitive-move check
 
 
 def _fill_event_countries(arts: list[Article]) -> None:
@@ -550,12 +637,10 @@ def _fill_event_countries(arts: list[Article]) -> None:
     todo = [a for a in arts if not (getattr(a, "event_country", "") or "").strip()]
     if not todo:
         return
-    system = "You are a B2B news analyst. For each news item you decide where the event it reports takes place."
+    system = "You are a news analyst. For each SIGNAL, say in which country the event happens."
     user = (f"SIGNALS:\n{_cands_block(todo)}\n\n"
-            "Return JSON {\"items\":[{\"i\":<int>,\"event_country\":\"...\"}]}"
-            " — one entry per signal index above. \"event_country\" is the country where the event in the item "
-            "takes place, as its English country name, or \"unknown\" when the item does not "
-            "make it clear.")
+            "Return JSON {\"items\":[{\"i\":0,\"event_country\":\"\"}]} with one entry per SIGNAL. "
+            "event_country is the country name in English, or \"unknown\" if the SIGNAL does not say.")
     data = llm.chat_json(system, user, max_tokens=300, default={})
     for it in (data.get("items") or []) if isinstance(data, dict) else []:
         if not isinstance(it, dict):
@@ -589,7 +674,6 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
 
     named = [c for c in named if not is_self(c, profile)]
     combined: list[tuple[Article, str]] = [(a, n) for (a, n) in peer_arts if _usable_peer(n)]
-    unattributed: list[Article] = []
     # Scan the whole bucket, not the top 10 by score. The list is sorted on composite,
     # and a diversified rival's high-volume unrelated news fills those slots -- the
     # on-category signals (a pure-play's CAR-T raise) sat at rank 20+ and were never
@@ -603,18 +687,11 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
         for c in named:
             if _matches(c, a.title) or _matches(c, a.summary or ""):
                 name = c; break
-        if not name:
-            # Category-search articles (profile.competitor_query_seeds) name no listed
-            # rival. They get the same buyer/peer/other triage the trigger pool uses.
-            unattributed.append(a)
-            continue
-        combined.append((a, name))
-    if unattributed:
-        top = sorted(unattributed, key=lambda x: x.composite, reverse=True)[:10]
-        rel, cands = triage_triggers(top, profile)      # one call
-        for i, (n, r) in rel.items():
-            if r == "peer" and _usable_peer(n):
-                combined.append((cands[i], n))
+        if name:
+            combined.append((a, name))
+    # Category-search articles that name no listed rival were labelled once, with everything
+    # else, in build_customer's pool: the ones labelled peer arrive in peer_arts. No second
+    # triage call here.
     if not combined:
         return None, None
 
@@ -639,16 +716,33 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
     _floor = getattr(config, "MIN_EV_RELEVANCY", 0.15)
     _strong = [p for p in pool if (getattr(p[0], "ev_relevancy", 0.0) or 0.0) >= _floor]
     pool = (_strong or pool)[:_COMPETITION_JUDGE_TOP]
-    log(f"    · judging top {len(pool)} of {len(combined)} competitor signals")
+    log(f"    · judging {len(pool)} of {len(combined)} competitor signals")
     _fill_event_countries([a for a, _ in pool])      # before the check, so foreign events cost no call
+    local = []
     for art, comp in pool:
         if _foreign_event(art, profile):
             log(f"    · skipping '{comp[:40]}' — event is in {art.event_country}, not the lead's country")
-            continue
-        if not _competitive_move_check(art, comp, profile):
-            log(f"    · {comp}: '{art.title[:60]}' failed the competitive-move check -- skipping")
-            continue
-        log(f"    · {comp}: '{art.title[:60]}' passed the competitive-move check")
+        else:
+            local.append((art, comp))
+    # Every candidate gets the trained check at once (it used to stop at the first pass, so a
+    # staff hire that came first beat a real deal further down). Then the model picks.
+    with cf.ThreadPoolExecutor(max_workers=max(1, min(8, len(local)))) as ex:
+        verdicts = list(ex.map(lambda p: _competitive_move_check(p[0], p[1], profile), local))
+    passed = []
+    for (art, comp), ok in zip(local, verdicts):
+        log(f"    · {comp}: '{art.title[:60]}' "
+            + ("passed the competitive-move check" if ok else "failed the competitive-move check"))
+        if ok:
+            passed.append((art, comp))
+    for _ in range(3):     # a pick whose write-up fails is removed and the model re-picks
+        if not passed:
+            break
+        k = _pick_competitor(passed, profile) if len(passed) > 1 else 0
+        if k < 0:
+            log("    · pick: no competitor move matters enough")
+            break
+        art, comp = passed.pop(k)
+        log(f"    · pick: {comp} | {art.title[:60]}")
         log(f"    · free-research: {comp}")
         enr = free_research.enrich_company(comp, config.get_country(getattr(profile, "market", "Global")))
         card = _write_card(art, comp, "competitor", enr, profile)
@@ -667,6 +761,30 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
     return None, None
 
 
+def _pick_competitor(moves: list[tuple[Article, str]], profile) -> int:
+    """One LLM call: the move that matters most to the seller, or -1 when none does."""
+    market = (getattr(profile, "market", "") or "").strip() or "the reader's country"
+    system = (
+        f"You are a competitive-intelligence analyst for {profile.company} ({profile.short}). "
+        f"{profile.short} sells: {profile.value_prop}\n\n"
+        f"Each CANDIDATE is news about a competitor of {profile.short}. Pick the ONE move that matters "
+        f"most to {profile.short}.\n"
+        "A strong move:\n"
+        f"- is a launch, expansion, acquisition, large contract, funding round or price move in "
+        f"{profile.short}'s own product area;\n"
+        f"- happens in {market}.\n"
+        "Weak news: staff hires, share price or results notes, awards, and moves in a different business.\n"
+        "If every candidate is weak, answer -1."
+    )
+    lines = "\n".join(f"[{k}] {name} | {a.title} | {(a.summary or '')[:160]}"
+                      for k, (a, name) in enumerate(moves))
+    data = llm.chat_json(system, f"CANDIDATES:\n{lines}\n\nReturn JSON {{\"best\": <index or -1>}}",
+                         max_tokens=60, default={})
+    k = data.get("best") if isinstance(data, dict) else None
+    # an explicit -1 means none fits; a failed or unparseable reply falls back to the top-ranked
+    return k if isinstance(k, int) and -1 <= k < len(moves) else 0
+
+
 # ── Prose guard: one shared helper (voice.chat_json_guarded) for every writer call ──
 def _chat_guarded(system: str, user: str, *, max_tokens: int, profile=None) -> dict:
     return voice.chat_json_guarded(system, user, max_tokens=max_tokens, profile=profile)
@@ -679,43 +797,41 @@ def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> d
     ctx = free_research.background_block(enr)
     fr = f"\nFREE RESEARCH (background on who the company is; not news):\n{ctx}\n" if ctx else ""
     src = (f"SIGNAL:\n TITLE: {a.title}\n SOURCE: {a.source} | DATE: {_date_label(a.published)}\n"
-           f" SUMMARY: {a.summary[:400]}\n {_scores_line(a)}\n")
+           f" SUMMARY: {a.summary[:400]}\n")
     _sc = voice.seller_context(profile, buyers=(kind != "competitor"))
     if _sc:
         src += _sc + "\n"
+    facts = ("- Facts about the event come only from the SIGNAL. Use FREE RESEARCH only to say who "
+             f"{name} is.\n"
+             f"- {name} and {profile.short} are different companies. Never describe {name} with "
+             f"{profile.short}'s products or business.\n"
+             "- Do not add numbers, units, places or events that are not in the SIGNAL.\n"
+             "- Skip parts of the SIGNAL that are not about the event, such as quotes or stories about "
+             "people.\n"
+             "- If the SIGNAL is not in English, state its facts in English.\n")
 
     if kind == "competitor":
         system = (
-            f"You are a competitive-intelligence analyst for {profile.company} ({profile.short}), which sells "
-            f"{profile.value_prop} Write a competitor brief on {name}. Facts about the event come only "
-            "from the SIGNAL; FREE RESEARCH is only for who the company is. Do NOT invent numbers. Never combine the SIGNAL with other "
-            "events, and never add a unit or currency the SIGNAL does not give. No angle-bracket placeholders.\n\n"
-            "The SIGNAL is sometimes about something that is not actually a competitive move at all -- a "
-            "regulator's internal review mistaken for a named company, an unrelated business line, a stock-"
-            "valuation note with no product news in it. If the SIGNAL does not describe a real move by "
-            f"{name} that is relevant to {profile.short}'s own market, set \"no_real_signal\": true and leave "
-            "the other fields empty, instead of writing a card that says there is no real competitive "
-            "news -- that card would still be sent to the reader as if it were a genuine finding.\n\n"
-            "A SIGNAL can also be about a REAL event at a REAL competitor and still not belong here, if that "
-            f"event has nothing to do with {profile.short}'s specific product. Strip every category label and "
-            "buzzword from the SIGNAL and ask: is there still a real move in the seller's own specific product "
-            "category, or does it just happen to use similar-sounding words while describing something else "
-            "entirely (a different product line, an unrelated business unit, a financial/HR move with no "
-            "product connection)? If it is the latter, that is ALSO no_real_signal -- being a genuine "
-            "competitor in general is not enough if this particular signal is not about the shared category.\n\n"
+            f"You are a competitive-intelligence analyst for {profile.company} ({profile.short}). "
+            f"{profile.short} sells: {profile.value_prop}\n"
+            f"You write a short card for {profile.short}'s team about one move by the competitor {name}, "
+            "based on one news item (the SIGNAL).\n"
+            + facts +
+            f"- If the SIGNAL is not a real move by {name} in {profile.short}'s product area, return "
+            "{\"no_real_signal\": true} and nothing else.\n\n"
             + voice.active_style()
         )
         user = (
-            f"{src}{fr}\nReturn a JSON object with keys:\n"
-            "  no_real_signal — true if the SIGNAL above is not actually a competitive move, OR is a real "
-            f"event that has nothing to do with {profile.short}'s specific product category (see system "
-            "prompt); omit or false otherwise\n"
-            f"  narrative_html — 3 to 5 SHORT sentences (max 24 words each): what {name} did, the figures if stated, and how "
-            f"it relates to {profile.short}'s products. Inline <b> allowed.\n"
-            f"  why_it_matters — one sentence on how this move could matter to {profile.short}, worded as a possibility\n"
-            "  their_edge — one phrase: what the SIGNAL shows this competitor is relying on\n"
-            f"  recommended_response — 1 to 2 sentences: a suggested response for {profile.short}\n"
-            "  counter_play — array of exactly 3 objects with 'title' (imperative) and 'body_html' (one sentence)"
+            f"{src}{fr}\nReturn JSON with these keys:\n"
+            "- narrative_html: 3 to 5 short sentences in this order: what "
+            f"{name} did, with the key fact from the SIGNAL; who {name} is; how the move touches "
+            f"{profile.short}'s market, naming one {profile.short} product. <b> allowed.\n"
+            f"- why_it_matters: one sentence on what this move could change for {profile.short}.\n"
+            f"- their_edge: a short phrase: the strength {name} relies on in this move, from the SIGNAL.\n"
+            f"- recommended_response: 1 to 2 sentences: a concrete step {profile.short} could take, naming "
+            "the product to lead with.\n"
+            "- counter_play: exactly 3 steps, each {\"title\": a short instruction, \"body_html\": one "
+            "sentence on how to do it}. Each step must be different."
         )
         data = _chat_guarded(system, user, max_tokens=1000, profile=profile)
         if data.get("no_real_signal"):
@@ -739,28 +855,33 @@ def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> d
     _lt = getattr(profile, "lead_type", "seller") or "seller"
     if _lt == "investor":
         _kind_txt, _need_txt, _roles_txt = (
-            "potential-deal brief", f"how it relates to {profile.short}'s deal interests", "contact roles")
+            "potential-deal brief", f"why this could interest {profile.short} as a deal", "contact roles")
     elif _lt in ("nonprofit", "education", "government"):
         _kind_txt, _need_txt, _roles_txt = (
-            "potential-partnership brief", f"how it relates to {profile.short}'s mission", "contact roles")
+            "potential-partnership brief", f"how this fits {profile.short}'s mission", "contact roles")
     else:
         _kind_txt, _need_txt, _roles_txt = (
-            "prospect brief", f"how it relates to {profile.short}'s products", "buyer roles")
+            "prospect brief", f"which {profile.short} product could fit this, and why",
+            "job titles")
     system = (
-        f"You are CoherentConnect, a sales-intelligence analyst for {profile.company} ({profile.short}), which "
-        f"sells {profile.value_prop} Write a {_kind_txt} for {name}. Facts about the event come only "
-        "from the SIGNAL; FREE RESEARCH is only for who the company is. Do NOT invent numbers. Never combine the SIGNAL with other "
-        "events, and never add a unit or currency the SIGNAL does not give. No angle-bracket placeholders.\n\n"
+        f"You are a sales analyst for {profile.company} ({profile.short}). {profile.short} sells: "
+        f"{profile.value_prop}\n"
+        f"You write a {_kind_txt} for {profile.short}'s sales team about {name}, based on one news "
+        "item (the SIGNAL).\n"
+        + facts + "\n"
         + voice.active_style()
     )
     user = (
-        f"{src}{fr}\nReturn a JSON object with keys:\n"
-        f"  narrative_html — 3 to 5 SHORT sentences (max 24 words each): what happened, figures if stated, one clause on who the company is (from FREE "
-        f"RESEARCH if given), and {_need_txt}. Inline <b> allowed.\n"
-        "  why_now — one sentence on what in the SIGNAL makes this timely, using only what the SIGNAL states\n"
-        f"  who_to_target — 2 to 3 {_roles_txt}\n"
-        f"  recommended_action — 1 to 2 sentences: a suggested first outreach step for {profile.short}\n"
-        "  approach_plan — array of exactly 3 objects with 'title' (imperative) and 'body_html' (one sentence)"
+        f"{src}{fr}\nReturn JSON with these keys:\n"
+        "- narrative_html: 3 to 5 short sentences in this order: what "
+        f"{name} did, with the key fact from the SIGNAL; who {name} is; {_need_txt}. <b> allowed.\n"
+        f"- why_now: one sentence: what in the SIGNAL makes now a good time to contact {name}, using "
+        "only the SIGNAL.\n"
+        f"- who_to_target: 2 to 3 {_roles_txt} at {name}, comma separated.\n"
+        f"- recommended_action: 1 to 2 sentences: the first step {profile.short}'s team could take, "
+        "naming the product to lead with.\n"
+        "- approach_plan: exactly 3 steps, each {\"title\": a short instruction, \"body_html\": one "
+        "sentence on how to do it}. Each step must be different."
     )
     data = _chat_guarded(system, user, max_tokens=1000, profile=profile)
     steps = _steps(data.get("approach_plan"), profile, "customer")
@@ -797,6 +918,24 @@ def _ctx_prefix(profile) -> str:
 
 
 # ── 3. INDUSTRY OUTLOOK — synthesize the industry news we track ───────────────
+def _topic_line(market_topic: str) -> str:
+    """Report briefs promise one market; keep the writer on it."""
+    if not market_topic:
+        return ""
+    return (f"The reader asked about the {market_topic} market. Write only about {market_topic}, "
+            "using only what the SIGNAL says about it.\n")
+
+
+def _outlook_order(short: str) -> str:
+    """What the Industry Outlook / Your Market paragraph says, sentence by sentence."""
+    return ("Write 3 to 5 short sentences in this order:\n"
+            "1. What happened, with the key fact from the SIGNAL (a number, a date, a place or a name).\n"
+            "2. Who this affects: which buyers or which part of the market.\n"
+            f"3. How it could matter to {short}, naming one {short} product.\n"
+            "If the SIGNAL happened outside the reader's country, say where.\n"
+            "If the SIGNAL is not in English, state its facts in English.\n")
+
+
 def synthesize_news(arts: list[Article], profile, market_topic: str = "") -> list[dict]:
     """`market_topic`, when given, is the EXACT subject the recipient was promised (a
     report brief's section 1, "Your Market", hard-codes its title to this string in
@@ -807,25 +946,20 @@ def synthesize_news(arts: list[Article], profile, market_topic: str = "") -> lis
     this prompt ever told the model what topic it was supposed to be on."""
     if not arts:
         return []
-    topic_line = (
-        f"\nThe recipient asked specifically about the {market_topic} market. Every "
-        f"sentence must be clearly and substantially about {market_topic} -- not just "
-        "an adjacent or loosely related industry. Write only what the SIGNAL "
-        f"says about {market_topic}.\n"
-        if market_topic else "")
     system = (
-        f"You are a sales-intelligence editor for {profile.company} ({profile.short}). For each signal, write "
-        "3 to 5 SHORT sentences (max 24 words each) about the industry shift and how it relates to what "
-        f"{profile.short} sells. If you say how it could matter to {profile.short}, word it as a possibility. "
-        "Ground in the signal; no invented figures. "
-        f"{topic_line}"
-        "\n\n" + voice.active_style()
+        f"You are a market editor for {profile.company} ({profile.short}). {profile.short} sells: "
+        f"{profile.value_prop}\n"
+        "For each SIGNAL, write a headline and a short paragraph for the Industry Outlook section of "
+        f"a brief sent to {profile.short}.\n"
+        + _outlook_order(profile.short) +
+        f"{_topic_line(market_topic)}\n"
+        + voice.active_style()
     )
     user = (
         f"{_ctx_prefix(profile)}SIGNALS:\n{_cands_block(arts)}\n\n"
-        "Return a JSON object {\"items\":[ ... ]} with one entry per signal index above. Each entry has keys: "
-        "'index' (integer), 'headline' (punchy, faithful, plain text no angle brackets), and 'body_html' "
-        "(the paragraph, inline <b>/<i> allowed). Finished prose, never placeholders." + _SCORE_NOTE
+        "Return JSON {\"items\":[{\"index\":0,\"headline\":\"\",\"body_html\":\"\"}]} with one entry per SIGNAL.\n"
+        "- headline: short and true to the SIGNAL, plain text.\n"
+        "- body_html: your sentences. <b> and <i> allowed." + _SCORE_NOTE
     )
     data = _chat_guarded(system, user, max_tokens=2000, profile=profile)
     items = data.get("items") if isinstance(data, dict) else None
@@ -868,33 +1002,28 @@ def triage_and_synthesize_industry(cands: list[Article], profile,
     top = cands[:8]
     if len(top) == 1:
         return synthesize_news(top, profile, market_topic=market_topic)
-    topic_line = (
-        f"\nThe recipient asked specifically about the {market_topic} market. Every "
-        f"sentence must be clearly and substantially about {market_topic} -- not just "
-        "an adjacent or loosely related industry. Write only what the SIGNAL "
-        f"says about {market_topic}.\n"
-        if market_topic else "")
+    pick = (f"the {market_topic} market" if market_topic
+            else f"what {profile.short} sells (its exact product area, not just its broad industry)")
     system = (
-        f"You are a sales-intelligence editor for {profile.company} ({profile.short}), which sells "
-        f"{profile.value_prop} First judge how well each news signal connects to what the seller "
-        "specifically sells -- not just its broad industry. A story about the seller's exact niche is a "
-        "better fit than one that only shares a broad vertical label (e.g. any hospital news for a "
-        "therapy-specific seller) with no real connection to the specific product/segment, even if it "
-        "looks on-topic. Then, for the single BEST-fitting signal only, write 3 to 5 SHORT sentences "
-        f"(max 24 words each) about the industry shift and how it relates to what {profile.short} sells. "
-        f"If you say how it could matter to {profile.short}, word it as a possibility. "
-        f"Ground in the signal; no invented figures. {topic_line}"
-        "\n\n" + voice.active_style()
+        f"You are a market editor for {profile.company} ({profile.short}). {profile.short} sells: "
+        f"{profile.value_prop}\n"
+        "STEP 1. Pick one SIGNAL.\n"
+        "- It must report a real event or change: a new rule, a deal, a launch, an investment, a "
+        "price or demand shift.\n"
+        "- Skip guides, lists, product reviews, opinion pieces and stories about one person.\n"
+        f"- Among the rest, pick the one closest to {pick}.\n"
+        "STEP 2. For that SIGNAL only, write a headline and a short paragraph.\n"
+        + _outlook_order(profile.short) +
+        f"{_topic_line(market_topic)}\n"
+        + voice.active_style()
     )
     user = (
         f"{_ctx_prefix(profile)}SIGNALS:\n{_cands_block(top)}\n\n"
-        'Return JSON {"best_index":<int>,"headline":"...","body_html":"...","event_country":"..."} -- '
-        '"best_index" is the '
-        "index of the single best-fitting signal above, \"headline\" is punchy and faithful (plain text, "
-        "no angle brackets), and \"body_html\" is the paragraph for that one signal (inline <b>/<i> "
-        "allowed). Finished prose, never placeholders. \"event_country\" is the country where the event in "
-        "that signal takes place, as its English country name, or \"unknown\" when the "
-        "signal does not make it clear." + _SCORE_NOTE
+        'Return JSON {"best_index":0,"headline":"","body_html":"","event_country":""}\n'
+        "- best_index: the index of the SIGNAL you picked.\n"
+        "- headline: short and true to that SIGNAL, plain text.\n"
+        "- body_html: your sentences. <b> and <i> allowed.\n"
+        "- event_country: the country where the event happens, in English, or \"unknown\"." + _SCORE_NOTE
     )
     data = _chat_guarded(system, user, max_tokens=900, profile=profile)
     i = data.get("best_index") if isinstance(data, dict) else None
@@ -936,7 +1065,8 @@ def build_brief(scored: list[Article], profile, log=print, *,
     log(f"  selecting: {len(triggers)} trigger / {len(industry)} industry / {len(competitor)} competitor eligible")
 
     log("  → [1] Potential Customer: triage buyers/peers → free-enrich → write")
-    customer, cust_art, peer_arts = build_customer(triggers, profile, log=log)
+    customer, cust_art, peer_arts = build_customer(triggers, profile, log=log,
+                                                   competitor_arts=competitor)
     # peers (rivals surfaced in the trigger pool) feed Competition Outlook, minus the customer pick
     peer_arts = [(a, n) for (a, n) in peer_arts if cust_art is None or a.title != cust_art.title]
 
@@ -955,7 +1085,9 @@ def build_brief(scored: list[Article], profile, log=print, *,
         competition, comp_art = build_competition(competitor, peer_arts, profile, log=log)
 
     used = {a.title for a in (cust_art, comp_art) if a}
-    industry_pool = [a for a in industry if a.title not in used]
+    # A staff appointment is not a market development ("BD Appoints Matthew Sassone as
+    # President of Pharmacy Automation" became Kirey's Your Market).
+    industry_pool = [a for a in industry if a.title not in used and not _is_appointment(a)]
     theme, themed = cluster.dominant_theme(industry_pool)
     if theme:
         log(f"  → [3] Industry Outlook: TF-IDF theme = '{theme}' ({len(themed)} signals)")
@@ -971,11 +1103,15 @@ def build_brief(scored: list[Article], profile, log=print, *,
         import score as _score
         topical = sorted(
             (a for a in scored if a.title not in used and a.bucket != "competitor"
-             and getattr(a, "topic_rel", 0.0) >= _score.TOPICAL),
-            # in-country first, then region, then global: a foreign story only wins when
-            # the lead's own country has nothing on-topic
+             and getattr(a, "topic_rel", 0.0) >= _score.TOPICAL and not _is_appointment(a)),
             key=lambda a: (_SCOPE_RANK.get(getattr(a, "geo_scope", ""), 0),
                            -a.topic_rel, -a.composite))
+        # In-country first, then region, then global: the writer only sees the nearest tier
+        # that has anything, so a foreign story is used only when the lead's own country
+        # has nothing on-topic (the sort alone did not stop the model picking India).
+        if topical:
+            nearest = _SCOPE_RANK.get(getattr(topical[0], "geo_scope", ""), 0)
+            topical = [a for a in topical if _SCOPE_RANK.get(getattr(a, "geo_scope", ""), 0) == nearest]
         log(f"  → [3] Your Market: {len(topical)} on-topic signals for '{market_topic}'")
     # One industry signal only: the strongest of the dominant theme. More than one
     # dilutes the section and repeats the same analyst read. triage (rank by fit) and

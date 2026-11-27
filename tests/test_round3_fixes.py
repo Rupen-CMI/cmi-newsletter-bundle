@@ -83,13 +83,13 @@ def test_self_peer_and_named_never_competitor():
     assert judged == []
 
 
-def test_unattributed_competitor_article_triaged_as_peer_reaches_check():
-    arts = [_art("Newco shelters expand", 2.0), _art("Some roundup", 1.0)]
-    reply = {"items": [{"index": 0, "company_name": "Newco Shelters", "relationship": "peer",
-                         "event_country": "unknown"},
-                       {"index": 1, "company_name": "Ministry of Health", "relationship": "peer"}]}
-    out, judged, cj = _run_comp(arts, [], reply)
-    assert cj.call_count == 1
+def test_unattributed_competitor_article_reaches_check_only_as_labelled_peer():
+    # Category-search articles are labelled once in build_customer's pool; build_competition
+    # gets the peers and makes no triage call of its own.
+    a = _art("Newco shelters expand", 2.0)
+    out, judged, _ = _run_comp([a, _art("Some roundup", 1.0)], [], {"items": []})
+    assert judged == [] and out == (None, None)
+    out, judged, _ = _run_comp([a], [(a, "Newco Shelters"), (a, "Ministry of Health")], {"items": []})
     assert judged == [("Newco shelters expand", "Newco Shelters")]
     assert out[0]["company_name"] == "Newco Shelters"
 
@@ -150,7 +150,7 @@ def test_guard_uses_meta_check_when_available():
 
 # ── prompts ───────────────────────────────────────────────────────────────────
 def test_style_brief_has_banned_and_no_source_reference():
-    for s in (voice.STYLE, voice.STYLE_BRIEF):
-        assert 'Never refer to "the signal"' in s
-    assert "BANNED:" in voice.STYLE_BRIEF and "landscape" in voice.STYLE_BRIEF \
+    assert 'Never refer to "the signal"' in voice.STYLE
+    assert 'Never mention "the signal"' in voice.STYLE_BRIEF
+    assert "Do not use:" in voice.STYLE_BRIEF and "landscape" in voice.STYLE_BRIEF \
         and "leverage" in voice.STYLE_BRIEF

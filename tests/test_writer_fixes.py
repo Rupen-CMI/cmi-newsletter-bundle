@@ -156,7 +156,7 @@ def test_field_instructions_ask_only_for_what_signal_supports():
         bb._write_card(_art(), "Acme", "customer", {}, _profile())
     system, user = cj.call_args.args[:2]
     assert "create a need" not in user and "buying window" not in user
-    assert "using only what the SIGNAL states" in user
+    assert "using only the SIGNAL" in user
     assert "BUYER FUNCTION" not in system + user
 
 
