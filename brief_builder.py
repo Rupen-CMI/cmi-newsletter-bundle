@@ -499,9 +499,13 @@ def build_customer(triggers: list[Article], profile, log=print, competitor_arts=
     # One pool, one classification: half from the buyer searches, half from the competitor
     # searches, so every item is labelled buyer / peer / other once and both sections draw on
     # the same labels. A short side's spare places go to the other side.
-    ranked = sorted(_rank_by_evidence(triggers), key=lambda a: 0 if _has_event(a) else 1)
+    # A staff appointment is a person's move, not a buying event or a competitive move
+    # ("Banque Richelieu Appoints New CEO" was pitched to BIL Suisse as a customer).
+    ranked = sorted(_rank_by_evidence([a for a in triggers if not _is_appointment(a)]),
+                    key=lambda a: 0 if _has_event(a) else 1)
     comp_ranked = _rank_by_evidence([a for a in (competitor_arts or [])
-                                     if not config.is_government(a.title)])
+                                     if not config.is_government(a.title)
+                                     and not _is_appointment(a)])
     half = _TRIAGE_POOL // 2 if comp_ranked else _TRIAGE_POOL
     n_comp = min(len(comp_ranked), _TRIAGE_POOL - min(len(ranked), half))
     pool = ranked[:_TRIAGE_POOL - n_comp] + comp_ranked[:n_comp]

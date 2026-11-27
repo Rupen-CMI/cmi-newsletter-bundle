@@ -714,7 +714,7 @@ def main() -> None:
                     help="do not resume/heal the VM; fail if the endpoint is down")
     ap.add_argument("--spot", action="store_true",
                     help="resume onto spot pricing when autoconnecting")
-    ap.add_argument("--model", default="cmi-7b")
+    ap.add_argument("--model", default="cmi9b")
     ap.add_argument("--outdir", default="output_pipeline")
     ap.add_argument("--stage", choices=STAGES, help="run only this stage")
     ap.add_argument("--send", action="store_true",

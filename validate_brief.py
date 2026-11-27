@@ -880,9 +880,9 @@ def check_detailed(path: str, profile, *, email: str = "", kind: str = "",
                     _conn = _db.get_conn()
                     _cur = _conn.cursor()
                     _cur.execute(
-                        "SELECT value_prop FROM company_intel WHERE domain=?", (dom,))
+                        "SELECT value_prop, source FROM company_intel WHERE domain=?", (dom,))
                     _row = _cur.fetchone()
-                    _homepage = (_row["value_prop"] if _row else "") or ""
+                    _homepage = (_row["value_prop"] if _row and _row["source"] == "homepage" else "") or ""
                     if _homepage:
                         _homepage_norm = re.sub(r"[^a-z0-9]", "", _homepage.lower())
                         _name_words = [w for w in norm(profile.company or "").split()

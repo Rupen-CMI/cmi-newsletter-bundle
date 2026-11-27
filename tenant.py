@@ -515,6 +515,9 @@ class Profile:
         )
         tidy_profile(profile, website=website)
         _drop_inactive_rivals(profile, conn)
+        # The profile call returned nothing usable (parse failure -> default {}): every
+        # field above is a generic fallback. Mark it so ProfileCache does not store it.
+        profile._fallback = not data
         return profile
 
 
@@ -1007,7 +1010,7 @@ class ProfileCache:
                                                conn=conn, subject_is_market=by_market,
                                                **({"topic_hint": topic}
                                                   if topic and not by_market else {}))
-                if conn is not None and db_key:
+                if conn is not None and db_key and not getattr(profile, "_fallback", False):
                     try:
                         import db as _db
                         _db.put_profile_cache(conn, db_key, market,

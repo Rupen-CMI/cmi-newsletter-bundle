@@ -1,7 +1,8 @@
-# JarvisLabs GPU instance: spawn, connect, start/stop
+# JarvisLabs GPU instance: spawn, connect, serve the model, start/stop
 
-Covers only creating the instance and getting a shell on it. Model setup and
-serving are in `.claude/skills/brief-generation-campaign/SKILL.md` Step 5.
+Sections 1–6 create the instance and get a shell on it. Sections 7–10 set up and
+serve the production model (`cmi9b`). Running generation itself is in
+`.claude/skills/brief-generation-campaign/SKILL.md` Step 6.
 
 All commands run from the laptop in **Git Bash** (not PowerShell). Prefix with
 `export PYTHONIOENCODING=utf-8;` if `jl` prints a Unicode error.
@@ -114,3 +115,144 @@ jl destroy <machine_id> --yes --json    # permanent; everything is lost
   reinstall packages, since the root disk was wiped.
 - Paused spot instances may vanish (`jl resume` → "Instance not found").
 - Never leave a finished instance running: it bills by the hour while idle.
+
+---
+
+## 7. Set up the model (new instance: about 15 minutes)
+
+**The model:** Qwen3.5-9B base + the fine-tuned **v4** LoRA adapter, merged into one
+model, served FP8 under the name `cmi9b` with 16k context and thinking off.
+Never use the old v1 `cmi-7b`.
+
+**The order is: install the base model first, then add the adapter on top.**
+
+1. **Download the base model** `Qwen/Qwen3.5-9B` from Hugging Face into `/home/qwen35base` (step 7b).
+   This is the plain, untuned model (19 GB).
+2. **Upload the v4 adapter** from the laptop into `/home/v4adapter` (step 7a). The adapter
+   is not a full model; it holds only the fine-tuned changes, and it is useless without the base.
+3. **Merge the adapter into the base** with `merge_v4.py` (step 7c). This writes one combined
+   model to `/home/merged`. vLLM serves this merged copy, not the base and not the adapter.
+
+Steps 1 and 2 can run in any order (7a and 7b below run together). Step 3 needs both done.
+
+Files on the laptop (repo root):
+
+| File | What it does |
+|---|---|
+| `training_data/v4_adapter/` | The v4 adapter (~340 MB) |
+| `ops/merge_v4.py` | Merges `/home/v4adapter` into `/home/qwen35base` and writes `/home/merged` |
+| `ops/serve_cmi9b.sh` | Starts vLLM on port 6006 serving `/home/merged` as `cmi9b` |
+
+Run from the repo root in Git Bash:
+
+```bash
+K=~/.ssh/jarvis_new; IP=<public_ip>
+S="ssh -i $K -o StrictHostKeyChecking=no root@$IP"
+
+# 7a. upload the adapter and the two scripts
+scp -i $K -r training_data/v4_adapter root@$IP:/home/v4adapter
+scp -i $K ops/merge_v4.py ops/serve_cmi9b.sh root@$IP:/home/
+
+# 7b. in parallel: install vLLM + PEFT, and download the base model (19 GB)
+$S "nohup sh -c 'pip install vllm peft > /home/pip.log 2>&1; pip install -q \"huggingface_hub>=1.5,<2.0\" >> /home/pip.log 2>&1; echo PIPDONE >> /home/pip.log' >/dev/null 2>&1 &"
+$S "cd /home && HF_HUB_DISABLE_XET=1 setsid nohup hf download Qwen/Qwen3.5-9B --local-dir /home/qwen35base > /home/dl_base.log 2>&1 < /dev/null &"
+```
+
+Wait until both are done (about 3–6 minutes):
+
+```bash
+$S "grep PIPDONE /home/pip.log; grep Downloaded /home/dl_base.log"   # both lines must print
+```
+
+The `huggingface_hub<2.0` pin must come **after** the installs. Version 2.x breaks
+the transformers import ("huggingface-hub>=1.5.0,<2.0 is required").
+
+```bash
+# 7c. merge the adapter into the base (about 3–5 minutes, runs on CPU)
+$S "cd /home && setsid nohup python merge_v4.py > /home/merge_v4.log 2>&1 < /dev/null &"
+$S "cat /home/merge_v4.log"
+```
+
+Done when the log shows **both**:
+- `lora modules attached: 400`. Any other number means the adapter didn't load; stop and check.
+- `merged -> /home/merged`
+
+## 8. Serve the model
+
+```bash
+$S "bash /home/serve_cmi9b.sh"
+```
+
+The script runs vLLM in the background with these settings: `--quantization fp8`,
+`--served-model-name cmi9b`, `--max-model-len 16384`, `--gpu-memory-utilization 0.90`,
+`--max-num-seqs 32`, thinking off, port `6006`. The log is `/home/vllm.log`.
+
+Wait for startup (1–3 minutes):
+
+```bash
+$S "grep -c 'Application startup complete' /home/vllm.log"   # 1 = ready
+```
+
+- Lines starting `[rank0]:W ... Cubin file saved by TritonBundler not found` are
+  **warnings** from an old compile cache. Ignore them.
+- A real failure stops the vLLM process. Check with
+  `$S "pgrep -f '[v]llm.entrypoints' || tail -30 /home/vllm.log"`.
+
+**Context must be 16384, not 4096.** Long profile and writer prompts overflow 4k
+and fail with HTTP 400 "maximum context length".
+
+## 9. Check the server and point the laptop at it
+
+On the instance:
+
+```bash
+$S "curl -s localhost:6006/v1/models"
+# must show "id":"cmi9b" and "max_model_len":16384
+
+$S "curl -s localhost:6006/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{\"model\":\"cmi9b\",\"messages\":[{\"role\":\"user\",\"content\":\"Capital of France in one word?\"}],\"max_tokens\":10}'"
+# content must be "Paris", with no <think> text
+```
+
+From the laptop, use the public endpoint (the `endpoints` URL ending `...1.notebooksn.jarvislabs.net`):
+
+```bash
+curl -s https://<endpoint-host>/v1/models
+```
+
+Then set the repo's `.env`. Edit only these two lines and never print the file;
+it holds secrets:
+
+```bash
+sed -i 's|^LOCAL_LLM_BASE_URL=.*|LOCAL_LLM_BASE_URL=https://<endpoint-host>/v1|; s|^LOCAL_LLM_MODEL=.*|LOCAL_LLM_MODEL=cmi9b|' .env
+grep -E "^LOCAL_LLM_(BASE_URL|MODEL)=" .env
+```
+
+The endpoint sits behind Cloudflare, which cuts requests that are silent for about
+100 s. `llm.py` streams responses to avoid this (`LOCAL_LLM_STREAM=0` turns it off;
+don't). It retries 520/522/524 errors twice.
+
+## 10. Restart, and after a resume
+
+**Restart the server on the same instance:**
+
+```bash
+$S "pkill -9 -f '[v]llm.entrypoints'; pkill -9 -f '[E]ngineCore'"
+$S "nvidia-smi --query-gpu=memory.used --format=csv"   # wait until < 500 MiB
+$S "bash /home/serve_cmi9b.sh"
+```
+
+Use the bracket patterns exactly. A plain `pkill -f vllm` also matches and kills
+your own ssh command. Starting vLLM before GPU memory is freed fails with "Free
+memory on device ... less than desired GPU memory utilization".
+
+**After `jl resume`:** `/home` (adapter, base, `/home/merged`, scripts) is still there.
+The root disk is wiped, so vLLM is gone. Skip the download and merge:
+
+```bash
+# re-read public_ip and endpoints from: jl get <machine_id> --json
+$S "nohup sh -c 'pip install vllm > /home/pip.log 2>&1; pip install -q \"huggingface_hub>=1.5,<2.0\" >> /home/pip.log 2>&1; echo PIPDONE >> /home/pip.log; bash /home/serve_cmi9b.sh' >/dev/null 2>&1 &"
+# about 5 minutes for pip, then 1–3 minutes for startup; check as in sections 8 and 9
+```
+
+If the endpoint host changed, update `.env` (section 9).

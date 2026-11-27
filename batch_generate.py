@@ -78,7 +78,7 @@ def main() -> None:
     ap.add_argument("--xlsx", default="Book1.xlsx")
     ap.add_argument("--limit", type=int, default=5)
     ap.add_argument("--base-url", default=os.environ.get("LOCAL_LLM_BASE_URL", ""))
-    ap.add_argument("--model", default="cmi-7b")
+    ap.add_argument("--model", default="cmi9b")
     ap.add_argument("--per-company", action="store_true",
                     help="One brief per company (default). Use --no-dedupe for one per lead.")
     ap.add_argument("--no-dedupe", action="store_true")

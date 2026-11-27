@@ -644,7 +644,7 @@ def list_briefs(conn: sqlite3.Connection, *, status: str = "", run_id: int | Non
 
 
 def sendable_briefs(conn: sqlite3.Connection, run_id: int | None = None) -> list[sqlite3.Row]:
-    """Briefs clear to send: generated or validated, and carrying no hard failure.
+    """Briefs clear to send: validated, and carrying no hard failure.
 
     The `fails` check is done here rather than in SQL because validation is stored as
     JSON -- and because the gate belongs next to the definition of 'sendable', not
@@ -653,7 +653,7 @@ def sendable_briefs(conn: sqlite3.Connection, run_id: int | None = None) -> list
     rows = list_briefs(conn, run_id=run_id, limit=10000)
     out = []
     for r in rows:
-        if r["status"] not in ("generated", "validated"):
+        if r["status"] != "validated":
             continue
         try:
             v = json.loads(r["validation"] or "{}")

@@ -136,7 +136,7 @@ class TestDomainOf:
 
 # ── the only irreversible step ────────────────────────────────────────────────
 class TestSendGate:
-    def _brief(self, conn, email, validation, status="generated"):
+    def _brief(self, conn, email, validation, status="validated"):
         bid = dbmod.save_brief(conn, email=email, company="C", kind="report",
                                html="<p>x</p>", status=status,
                                validation=json.dumps(validation))
@@ -159,20 +159,25 @@ class TestSendGate:
         self._brief(conn, "sent@x.com", {"fails": []}, status="sent")
         assert dbmod.sendable_briefs(conn) == []
 
+    def test_never_validated_is_not_sendable(self, conn):
+        """A brief whose validate stage never ran must not be sent."""
+        self._brief(conn, "raw@x.com", {}, status="generated")
+        assert dbmod.sendable_briefs(conn) == []
+
     def test_malformed_validation_json_does_not_crash_the_gate(self, conn):
         """Fail-open on unparseable JSON is deliberate, but it must not raise --
         one bad row would otherwise stop an entire batch from sending."""
         dbmod.save_brief(conn, email="bad@x.com", company="C", kind="report",
-                         html="<p>x</p>", status="generated", validation="{not json")
+                         html="<p>x</p>", status="validated", validation="{not json")
         assert len(dbmod.sendable_briefs(conn)) == 1
 
     def test_run_id_scopes_the_gate(self, conn):
         rid = dbmod.start_run(conn, workers=2, kind="report")
         dbmod.save_brief(conn, email="a@x.com", company="C", kind="report",
-                         html="<p>x</p>", status="generated",
+                         html="<p>x</p>", status="validated",
                          validation="{}", run_id=rid)
         dbmod.save_brief(conn, email="b@x.com", company="C", kind="report",
-                         html="<p>x</p>", status="generated", validation="{}")
+                         html="<p>x</p>", status="validated", validation="{}")
         assert len(dbmod.sendable_briefs(conn, run_id=rid)) == 1
         assert len(dbmod.sendable_briefs(conn)) == 2
 
@@ -866,7 +871,7 @@ class TestSendDryRun:
         monkeypatch.setattr(mailer, "send_html",
                             lambda *a, **k: called.append(a))
         dbmod.save_brief(conn, email="a@x.com", company="C", kind="report",
-                         html="<p>x</p>", status="generated", validation={"fails": []})
+                         html="<p>x</p>", status="validated", validation={"fails": []})
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         out = pipeline.stage_send(conn, run_id=None, campaign="t", dry_run=True,
                                   limit=100)
@@ -882,7 +887,7 @@ class TestSendDryRun:
         monkeypatch.setattr(mailer, "send_html", lambda *a, **k: called.append(a))
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         dbmod.save_brief(conn, email="gone@x.com", company="C", kind="signal",
-                         html="<p>x</p>", status="generated", validation={"fails": []})
+                         html="<p>x</p>", status="validated", validation={"fails": []})
         dbmod.mark_unsubscribed(conn, "gone@x.com")
         out = pipeline.stage_send(conn, run_id=None, campaign="t", dry_run=False,
                                   limit=100)
@@ -897,7 +902,7 @@ class TestSendDryRun:
         monkeypatch.setattr(mailer, "send_html", lambda *a, **k: called.append(a))
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         dbmod.save_brief(conn, email="bad@x.com", company="C", kind="signal",
-                         html="<p>x</p>", status="generated",
+                         html="<p>x</p>", status="validated",
                          validation={"fails": ["missing sections"]})
         out = pipeline.stage_send(conn, run_id=None, campaign="t", dry_run=False,
                                   limit=100)
@@ -919,7 +924,7 @@ class TestSendDryRun:
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         for e in ("ok1@x.com", "boom@x.com", "ok2@x.com"):
             dbmod.save_brief(conn, email=e, company="C", kind="signal",
-                             html="<p>x</p>", status="generated",
+                             html="<p>x</p>", status="validated",
                              validation={"fails": []})
         out = pipeline.stage_send(conn, run_id=None, campaign="t", dry_run=False,
                                   limit=100)
@@ -942,7 +947,7 @@ class TestSendDryRun:
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         for e in ("live1@x.com", "live2@x.com", "unsub@x.com"):
             dbmod.save_brief(conn, email=e, company="C", kind="signal",
-                             html="<p>x</p>", status="generated",
+                             html="<p>x</p>", status="validated",
                              validation={"fails": []})
         dbmod.mark_unsubscribed(conn, "unsub@x.com")
 
@@ -964,7 +969,7 @@ class TestSendDryRun:
         monkeypatch.setattr(pipeline, "_log", lambda *_a, **_k: None)
         for e in ("live1@x.com", "live2@x.com", "unsub@x.com"):
             dbmod.save_brief(conn, email=e, company="C", kind="signal",
-                             html="<p>x</p>", status="generated",
+                             html="<p>x</p>", status="validated",
                              validation={"fails": []})
         dbmod.mark_unsubscribed(conn, "unsub@x.com")
         # sendable_briefs is id DESC, so the unsubscribed row is first and is

@@ -369,7 +369,7 @@ LLM = {
     # The self-hosted fine-tune (PLAN.md Phase 4). Served behind an OpenAI-compatible
     # endpoint, so it needs no client changes -- only a base_url. Set LOCAL_LLM_BASE_URL
     # to the running server; LLM_PROVIDER=local then routes every call to it.
-    "local_model": "cmi-7b",
+    "local_model": "cmi9b",
     "local_base_url": "http://localhost:8000/v1",
     # Per-request timeout (seconds) on every OpenAI SDK client (local/DeepSeek/OpenAI).
     # Without one, a hung request on an overloaded vLLM server just blocks a worker

@@ -29,7 +29,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=20)
     ap.add_argument("--workers", type=int, default=40)
     ap.add_argument("--base-url", default=os.environ.get("LOCAL_LLM_BASE_URL", ""))
-    ap.add_argument("--model", default="cmi-7b")
+    ap.add_argument("--model", default="cmi9b")
     ap.add_argument("--account-dir", default="output_all40_account")
     ap.add_argument("--report-dir", default="output_all40_report")
     ap.add_argument("--rate", type=float, default=41.31,
