@@ -200,7 +200,8 @@ def filter_topic_for_lead(topic_arts: list[Article], country: dict, tokens: list
         a.geo_scope = "country"
 
     def _on(a: Article) -> bool:
-        return score.topic_relevance(a, tokens) >= score.TOPICAL
+        return (score.topic_relevance(a, tokens) >= score.TOPICAL
+                or (getattr(a, "topic_sim", 0.0) or 0.0) >= score.TOPIC_SIM_MIN)
 
     if sum(1 for a in kept if _on(a)) >= min_on_topic:
         return kept, "country"

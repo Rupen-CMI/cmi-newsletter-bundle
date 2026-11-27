@@ -279,13 +279,18 @@ RESEARCH_FIRM_SOURCES = [
 
 # Report-PR headline patterns (a competitor's report title, not a real news event).
 import re as _re
+# "market share" alone is a news phrase ("EV market share climbs to 13%"); report titles
+# still match through "size", "report", "forecast"...
 _REPORT_PR_RE = _re.compile(
-    r"market\s+(size|share|report|forecast|analysis|outlook|trends?|research|revenue|growth\s+analysis)"
+    r"market\s+(size|report|forecast|analysis|research|revenue|growth\s+analysis)"
+    # "market trends/outlook" only as a dated report title ("Italy Market Outlook 2026"); an
+    # interview "on ... market outlook" is news.
+    r"|market\s+(outlook|trends?)\b(?=.{0,25}\b20\d\d\b)"
     r"|\bcagr\b|forecast\s+(to|till|until|period|by)\s*,?\s*20\d\d|to\s+reach\s+(usd|us\$|\$|inr)"
     r"|\|\s*(report|forecast|industry|20\d\d)|\bmn\b.*\b20\d\d\b|\(7mm\)|worth\s+(usd|us\$|\$)"
     # "<X> Market To 2035: <driver> Drives Growth" and "Market Projected/Expected to ..."
     r"|\bmarkets?\s+to\s+20\d\d\b|\bmarkets?\s+(is\s+)?(projected|expected|set|forecast(ed)?|poised)\s+to\b"
-    r"|\bto\s+(hit|touch|surpass|exceed)\s+(usd|us\$|\$|inr)|\bmarkets?\b.{0,80}\bby\s+20[2-5]\d\b",
+    r"|\bto\s+(hit|touch|surpass)\s+(usd|us\$|\$|inr)|\bmarkets?\b.{0,80}\bby\s+20[2-5]\d\b",
     _re.I,
 )
 
@@ -640,3 +645,11 @@ SOURCE_BLOCKLIST = sorted(set([s.lower() for s in RESEARCH_FIRM_SOURCES] + [
     "market data forecast", "marketdataforecast", "global market insights", "gminsights",
     "facebook",
 ]))
+
+# Layer-1 junk filter (filters.py). Word-boundary matched against the lowercased SOURCE name.
+# Reference/encyclopedia pages are not news (Britannica "Cloud seeding" reached a brief).
+REFERENCE_SOURCES = ("britannica", "wikipedia", "investopedia", "merriam-webster", "dictionary.com",
+                     "wikihow", "thesaurus", "collins dictionary", "cambridge dictionary",
+                     "encyclopedia", "study.com", "quizlet")
+# Self-published posts, not reporting.
+SELF_PUBLISHED_SOURCES = ("medium", "linkedin", "blogspot", "wordpress.com", "tumblr", "substack")

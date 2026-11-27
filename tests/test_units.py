@@ -538,6 +538,11 @@ class TestJsonParsing:
 
 # ── editorial noise filters ───────────────────────────────────────────────────
 class TestResearchPR:
+    def test_market_share_news_is_not_flagged(self):
+        import config
+        assert not config.is_research_pr("Drive Tesla Canada", "Canada’s EV Market Share Climbs From 7% to 13% in 18 Months")
+        assert config.is_research_pr("PRNewswire", "Global Widget Market Size, Share and Forecast 2026-2032")
+
     def test_rival_research_firm_is_flagged(self):
         """CMI sells market reports, so a rival research firm's PR is competitor
         noise, not a market signal."""

@@ -15,20 +15,30 @@ from collect import Article
 _TRIG = config.TRIGGER_TYPES
 _S = config.SCORING
 
-# Stock-ticker churn ("Novartis India Share Price Today: 6.19% Fall") is not a
-# competitive move -- it is market noise that happens to share a competitor's
-# name, and it slips into the eligible pool purely on the competitor-name query
-# match with no real trigger type. Screen it out regardless of composite score.
-_TICKER_NOISE = re.compile(
-    r"\bshare price\b|\bstock price\b|\b\d+(\.\d+)?%\s*(fall|surge|gain|jump|drop|rise|slip)\b"
-    r"|\b(surges?|falls?|jumps?|slips?|gains?|rises?|drops?|tumbles?|rallies?)\s+\d+(\.\d+)?%"
-    r"|\bday'?s high\b|\bday'?s low\b|\b52-week\b|\binvestor call\b",
-    re.I,
-)
+# Stock-ticker churn ("Novartis India Share Price Today: 6.19% Fall") is not a competitive move.
+# A bare "rises 10%" is NOT enough: company results, sales and harvest figures use the same words
+# (35 of 46 such drops on the 2026-11-26 Test15 pools were real news). A percentage move counts as
+# ticker noise only when the headline is about the stock itself.
+_TICKER_HARD = re.compile(
+    r"\bshare price\b|\bstock price\b|\bday'?s high\b|\bday'?s low\b|\b52-week\b|\binvestor call\b"
+    r"|\bprice prediction\b|\blive chart\b", re.I)
+_PCT_MOVE = re.compile(
+    r"\b\d+(\.\d+)?%\s*(fall|surge|gain|jump|drop|rise|slip)\b"
+    r"|\b(surges?|falls?|jumps?|slips?|gains?|rises?|drops?|tumbles?|rallies?)\s+\d+(\.\d+)?%", re.I)
+_STOCK_WORD = re.compile(r"\b(shares?|stocks?|sensex|nifty|nasdaq|nyse|scrip|market cap)\b", re.I)
+# A move headline that also reports results or a deal is company news, not ticker churn
+# ("Biocon shares jump 6% on block deal; Mylan likely to exit", "Sun Pharma Q2 results ... stock jumps").
+_NEWS_EVENT = re.compile(
+    r"\b(results?|net profit|profit|revenue|sales|block deal|deal|acqui\w*|merger|exits?|stake"
+    r"|approval|launch\w*|orders?|contract|plant|factory)\b", re.I)
+_TICKER_NOISE = _TICKER_HARD  # kept for old imports
 
 
 def _is_ticker_noise(a: Article) -> bool:
-    return bool(_TICKER_NOISE.search(f"{a.title} {a.summary}"))
+    t = f"{a.title} {a.summary}"
+    if _TICKER_HARD.search(t):
+        return True
+    return bool(_PCT_MOVE.search(t) and _STOCK_WORD.search(t) and not _NEWS_EVENT.search(t))
 
 
 # Paid "Top 10 <X> Manufacturers in 2026" listicles syndicated through local-newspaper
@@ -232,6 +242,64 @@ def topic_relevance(a: Article, tokens: list[str]) -> float:
 
 
 TOPICAL = 0.6     # topic_rel at or above this counts as being about the topic
+TOPIC_SIM_MIN = 0.45     # embedding topic similarity that counts as on-topic (any language)
+NEWS_DROP = -0.30        # news_margin below this is dropped outright (3% of Test15 pools, 0 final picks)
+NEWS_TOPICAL_MIN = -0.10 # topic articles must look at least this much like business news
+
+
+def annotate_topic(articles, topic, profile) -> None:
+    """Set topic_rel (keyword) and topic_sim (embedding) on every article."""
+    if not topic:
+        for a in articles:
+            a.topic_rel = 0.0
+            a.topic_sim = 0.0
+        return
+    tokens = topic_tokens(topic, topic_drop_words(getattr(profile, "market", "")))
+    for a in articles:
+        a.topic_rel = topic_relevance(a, tokens) if tokens else 0.0
+    import collect
+    subj = collect.topic_subject(topic) or topic
+    try:
+        sims = relevance.topic_similarity(articles, subj)
+    except Exception:  # noqa: BLE001
+        sims = None
+    for i, a in enumerate(articles):
+        a.topic_sim = sims[i] if sims else 0.0
+
+
+def is_topical(a) -> bool:
+    return a.topic_rel >= TOPICAL or (getattr(a, "topic_sim", 0.0) or 0.0) >= TOPIC_SIM_MIN
+
+
+def topical_evidence(a) -> bool:
+    return (is_topical(a) and not is_unsafe_to_cite(a)
+            and (getattr(a, "news_margin", None) is None or a.news_margin >= NEWS_TOPICAL_MIN))
+
+
+def _clamp(x):
+    return max(0.0, min(1.0, x))
+
+
+def l2_score(a, topical: bool = False) -> float:
+    """Shortlist rank score; fit = seller fit (or topic fit for Your Market), ev = use-case
+    fit, news = business-news check, damped by recency. Weights are first guesses tuned on
+    the Test15 offline replay."""
+    if topical:
+        fit = max(_clamp(((getattr(a, "topic_sim", 0.0) or 0.0) - 0.35) / 0.40),
+                  0.6 if (a.topic_rel or 0) >= TOPICAL else 0.0)
+    else:
+        sr = getattr(a, "seller_rel", None)
+        fit = 0.5 if sr is None else _clamp((sr - 0.10) / 0.30)
+    nm = getattr(a, "news_margin", None)
+    news = 0.5 if nm is None else _clamp((nm + 0.25) / 0.50)
+    ev = getattr(a, "ev_relevancy", 0.0) or 0.0
+    rec = getattr(a, "ev_recency", 0.0) or 0.0
+    return round((0.35 * fit + 0.35 * ev + 0.30 * news) * (0.5 + 0.5 * rec), 4)
+
+
+def _news_junk(a) -> bool:
+    nm = getattr(a, "news_margin", None)
+    return nm is not None and nm < NEWS_DROP
 
 
 # ── 5. SELLER RELEVANCE (embedding) ──────────────────────────────────────────
@@ -255,17 +323,27 @@ def _scaled_seller_rel(cos: float) -> float:
 def score_all(articles: list[Article], profile, topic: str = "") -> list[Article]:
     """`topic` (report briefs) only ANNOTATES each article with topic_rel; it never
     changes composite or eligibility, so every other section behaves exactly as before.
-    brief_builder uses topic_rel to choose the 'Your Market' evidence."""
-    toks = topic_tokens(topic, topic_drop_words(getattr(profile, "market", "")))
+    It sets topic_rel (keyword) and topic_sim (embedding); brief_builder uses them to
+    choose the 'Your Market' evidence."""
+    if topic:
+        annotate_topic(articles, topic, profile)
+    else:
+        for a in articles:
+            a.topic_rel = 0.0
+            a.topic_sim = 0.0
     # Embedding similarity of every article to the seller; None per article (or overall)
     # when the local model is unavailable -> bucket floors below apply as before.
     try:
         sims = relevance.seller_relevance(articles, profile)
     except Exception:  # noqa: BLE001 -- never let the optional model break scoring
         sims = None
+    try:
+        margins = relevance.news_margin(articles)
+    except Exception:  # noqa: BLE001
+        margins = None
     for i, a in enumerate(articles):
         a.seller_rel = sims[i] if sims is not None else None
-        a.topic_rel = topic_relevance(a, toks) if toks else 0.0
+        a.news_margin = margins[i] if margins else None
         rel, inds = relevancy(a, profile.industry_keywords)
         # Bucket-based relevancy floor: a trigger/industry article already matched a
         # seller-SCOPED query, so it is topically relevant even if the keyword lexicon
@@ -292,6 +370,8 @@ def score_all(articles: list[Article], profile, topic: str = "") -> list[Article
         evidence_score.score_evidence(articles, profile)   # annotation only
     except Exception:  # noqa: BLE001
         pass
+    for a in articles:
+        a.l2_score = l2_score(a)
     return articles
 
 
@@ -306,7 +386,8 @@ def passes_relevance_floor(a: Article) -> bool:
 def fallback_pool(scored: list[Article]) -> list[Article]:
     """What a brief is built from when eligible() returns nothing: items that are safe to
     cite AND clear the relevance floor, so unrelated news cannot return via the fallback."""
-    return [a for a in scored if not is_unsafe_to_cite(a) and passes_relevance_floor(a)]
+    return [a for a in scored if not is_unsafe_to_cite(a) and passes_relevance_floor(a)
+            and not _news_junk(a)]
 
 
 def eligible(articles: list[Article]) -> list[Article]:
@@ -320,7 +401,8 @@ def eligible(articles: list[Article]) -> list[Article]:
     # release, "Source: MarketsandMarkets ->" link included). Filtering here, in the
     # one function every section's candidate pool passes through, closes it for all
     # of them at once rather than patching each section separately.
-    out = [a for a in articles if a.composite >= _S["min_composite"] and not is_unsafe_to_cite(a)]
+    out = [a for a in articles if a.composite >= _S["min_composite"] and not is_unsafe_to_cite(a)
+           and not _news_junk(a)]
     # Seller-relevance gate (embedding score; skipped when the model was unavailable):
     # drop what is clearly unrelated to the seller -- national headlines that merely rode
     # in on a seller-scoped query. Threshold is relative to the pool AND absolute.

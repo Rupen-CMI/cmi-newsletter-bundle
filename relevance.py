@@ -166,3 +166,54 @@ def title_similarity_groups(titles: list[str], threshold: float = 0.85) -> list[
         if ri != rj:
             parent[rj] = ri
     return [find(i) for i in range(n)]
+
+
+# Business-news check: an article is compared with short descriptions of business events and of
+# non-news pages; margin = best business cosine - best non-news cosine. Measured on 58 hand-labelled
+# Test15 headlines: AUC 0.89. English descriptions; non-English news scores somewhat lower, so callers
+# use it mainly for ranking and only hard-drop far below zero.
+NEWS_POS = [
+    "Company invests in a new factory to expand production capacity",
+    "Firm acquires a rival business in a multi-million deal",
+    "Startup raises funding round led by investors to scale its platform",
+    "Company wins a contract to supply equipment to a customer",
+    "Manufacturer launches a new product line for industrial customers",
+    "Government sets new regulation that companies in the sector must comply with",
+    "Demand for the product rises as buyers increase orders, prices change",
+    "Two companies form a joint venture to build a new plant",
+]
+NEWS_NEG = [
+    "Encyclopedia article defining a concept and its history",
+    "Celebrity wedding story and personal lifestyle anecdote",
+    "How-to guide and tips for consumers at home",
+    "Opinion column about a social issue",
+    "Product review of a gadget for personal use",
+    "What is open and closed on the holiday weekend",
+    "Crime story about a person arrested by police",
+    "Academic study finds health risks for patients",
+]
+
+
+def news_margin(articles: list) -> list[float] | None:
+    """Per article: best cosine to a business-event description minus best cosine to a
+    non-news description. None if no model; [] for empty input."""
+    if not articles:
+        return []
+    mat = embed(NEWS_POS + NEWS_NEG + [article_text(a) for a in articles])
+    if mat is None:
+        return None
+    npos, nneg = len(NEWS_POS), len(NEWS_NEG)
+    sims = mat[npos + nneg:] @ mat[:npos + nneg].T
+    return [round(float(r[:npos].max() - r[npos:].max()), 3) for r in sims]
+
+
+def topic_similarity(articles: list, text: str) -> list[float] | None:
+    """Cosine(article, text) per article; None if no text or no model; [] for empty input."""
+    if not articles:
+        return []
+    if not text or not text.strip():
+        return None
+    mat = embed([text] + [article_text(a) for a in articles])
+    if mat is None:
+        return None
+    return [round(float(x), 3) for x in mat[1:] @ mat[0]]

@@ -57,6 +57,11 @@ class Article:
     geo_scope: str = ""
     # Where summary came from after enrich_texts(): "page" / "bing" / "" (feed summary).
     text_source: str = ""
+    # Layer-2 annotations (score.score_all): embedding similarity to the report topic,
+    # business-news margin (relevance.news_margin) and the shortlist rank score (score.l2_score).
+    topic_sim: float = 0.0
+    news_margin: float | None = None
+    l2_score: float | None = None
 
 
 def _fingerprint(title: str, url: str) -> str:
@@ -913,7 +918,8 @@ def enrich_texts(articles: list[Article], per_bucket: int = 8, max_workers: int 
 
     for bucket in ("trigger", "industry", "competitor"):
         take([a for a in articles if a.bucket == bucket], per_bucket,
-             lambda a: (getattr(a, "ev_relevancy", 0) * getattr(a, "ev_recency", 0),
+             lambda a: (a.l2_score if getattr(a, "l2_score", None) is not None
+                        else getattr(a, "ev_relevancy", 0) * getattr(a, "ev_recency", 0),
                         getattr(a, "composite", 0)))
     take([a for a in articles if getattr(a, "topic_rel", 0) > 0], 8,
          lambda a: getattr(a, "topic_rel", 0))

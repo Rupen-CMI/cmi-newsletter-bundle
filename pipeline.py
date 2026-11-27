@@ -100,7 +100,8 @@ def kinds_for_lead(lead: dict, kinds: list[str]) -> list[str]:
 _EVIDENCE_ART_FIELDS = ("title", "url", "source", "summary", "query", "bucket", "composite",
                         "relevancy", "freshness", "importance", "trigger_type",
                         "event_country", "ev_relevancy", "ev_recency", "ev_age_days",
-                        "ev_reason", "topic_rel", "geo_scope", "text_source")
+                        "ev_reason", "topic_rel", "geo_scope", "text_source",
+                        "seller_rel", "topic_sim", "news_margin", "l2_score")
 
 
 def _evidence_profile(profile) -> dict:
@@ -341,6 +342,10 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
             # countries when trigger+competitor evidence runs dry. Topic news widens
             # country -> region -> global (on-topic only), see geo.filter_topic_for_lead.
             # A Global lead is unfiltered, as before.
+            # Topic fit (keyword + embedding) must exist before the topic geo filter reads it.
+            if topic_arts:
+                import score as _score_t
+                _score_t.annotate_topic(topic_arts, topic_q, profile)
             if not geo.is_global(country) and frozen is None:
                 arts, _geo_scope = geo.filter_for_lead(arts, country, profile=profile,
                                                        conn=worker_conn)
@@ -351,6 +356,9 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
                         _score.topic_tokens(topic_q, _score.topic_drop_words(profile.market)),
                         profile=profile, conn=worker_conn)
             arts = arts + topic_arts
+            # Layer 1: drop what is always junk (source/headline rules), before scoring.
+            import filters
+            arts, ev["l1_dropped"] = filters.apply_l1(arts)
             scored = score_all(arts, profile, topic=topic_q)
             # Real article text for the top-ranked items (feed summaries are headlines).
             # Skipped in frozen replay so replay stays prompt-only.
@@ -367,8 +375,8 @@ def stage_generate(conn, leads: list[dict], *, kinds: list[str], workers: int,
                 # search was run to find.
                 import score as _score
                 _kept = {id(a) for a in keep}
-                keep = keep + [a for a in scored if a.topic_rel >= _score.TOPICAL
-                               and not is_unsafe_to_cite(a) and id(a) not in _kept]
+                keep = keep + [a for a in scored if _score.topical_evidence(a)
+                               and id(a) not in _kept]
             # `keep or scored`: a thin-coverage lead can score everything below
             # min_composite, and falling back to the whole unfiltered pool rather than
             # an empty brief is the right call for a low composite score -- but

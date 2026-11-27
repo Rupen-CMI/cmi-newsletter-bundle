@@ -25,7 +25,7 @@ import cluster
 import regions
 import tenant
 import free_research
-from collect import Article
+from collect import Article, _title_key
 
 _INLINE_OPEN = re.compile(r"^<(b|i|em|strong|span|a)\b", re.I)
 _INLINE_CLOSE = re.compile(r"</(b|i|em|strong|span|a)>$", re.I)
@@ -100,6 +100,12 @@ def _evq(a: Article) -> float:
     return (getattr(a, "ev_relevancy", 0.0) or 0.0) * (getattr(a, "ev_recency", 0.0) or 0.0)
 
 
+def _rankq(a: Article) -> float:
+    """Shortlist order: score.l2_score when scored, else the old relevancy x recency."""
+    v = getattr(a, "l2_score", None)
+    return v if v is not None else _evq(a)
+
+
 def _above_floor(arts: list[Article]) -> list[Article]:
     """Drop items under config.MIN_EV_RELEVANCY; if that leaves nothing keep them all."""
     floor = getattr(config, "MIN_EV_RELEVANCY", 0.15)
@@ -110,10 +116,30 @@ def _above_floor(arts: list[Article]) -> list[Article]:
 _SCOPE_RANK = {"region": 1, "global": 2}   # topic news geo tier, "" / "country" = 0
 
 
+def _story_grams(title: str) -> set[str]:
+    t = re.sub(r"\W+", "", _title_key(title))
+    return {t[i:i + 3] for i in range(len(t) - 2)} if len(t) > 3 else {t}
+
+
+def _drop_repeats(arts: list[Article]) -> list[Article]:
+    """Keep the first (best-ranked) article of each story. The same event from several
+    outlets filled 2-3 shortlist slots ("Fuyo Lease + TOKIUM" three times) and pushed other
+    news out. Same story = half the shorter headline's letter triples are shared; measured
+    on Test15 pairs, repeats scored 0.5-1.0 and different stories at most 0.46."""
+    kept, seen = [], []
+    for a in arts:
+        g = _story_grams(a.title)
+        if g and any(s and len(g & s) >= 0.5 * min(len(g), len(s)) for s in seen):
+            continue
+        kept.append(a)
+        seen.append(g)
+    return kept
+
+
 def _rank_by_evidence(arts: list[Article]) -> list[Article]:
-    """Floor, then order by relevancy x recency (desc); composite breaks ties, so an
-    unscored list keeps its current order."""
-    return sorted(_above_floor(arts), key=lambda a: (_evq(a), a.composite), reverse=True)
+    """Floor, then order by the layer-2 rank score (desc); composite breaks ties, so an
+    unscored list keeps its current order. Repeats of one story are dropped."""
+    return _drop_repeats(sorted(_above_floor(arts), key=lambda a: (_rankq(a), a.composite), reverse=True))
 
 
 def _date_label(dt: datetime) -> str:
@@ -710,7 +736,7 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
         return 1 if product_terms and _term_hits(product_terms, hay) else 0
 
     pool, seen_titles = [], set()
-    for art, comp in sorted(combined, key=lambda x: (_on_category(x[0]), _evq(x[0]), x[0].composite),
+    for art, comp in sorted(combined, key=lambda x: (_on_category(x[0]), _rankq(x[0]), x[0].composite),
                             reverse=True):
         key = re.sub(r"[^a-z0-9]+", " ", (art.title or "").lower()).strip()
         if key in seen_titles:
@@ -1107,15 +1133,16 @@ def build_brief(scored: list[Article], profile, log=print, *,
         import score as _score
         topical = sorted(
             (a for a in scored if a.title not in used and a.bucket != "competitor"
-             and getattr(a, "topic_rel", 0.0) >= _score.TOPICAL and not _is_appointment(a)),
+             and _score.topical_evidence(a) and not _is_appointment(a)),
             key=lambda a: (_SCOPE_RANK.get(getattr(a, "geo_scope", ""), 0),
-                           -a.topic_rel, -a.composite))
+                           -_score.l2_score(a, topical=True), -a.composite))
         # In-country first, then region, then global: the writer only sees the nearest tier
         # that has anything, so a foreign story is used only when the lead's own country
         # has nothing on-topic (the sort alone did not stop the model picking India).
         if topical:
             nearest = _SCOPE_RANK.get(getattr(topical[0], "geo_scope", ""), 0)
             topical = [a for a in topical if _SCOPE_RANK.get(getattr(a, "geo_scope", ""), 0) == nearest]
+            topical = _drop_repeats(topical)
         log(f"  → [3] Your Market: {len(topical)} on-topic signals for '{market_topic}'")
     # One industry signal only: the strongest of the dominant theme. More than one
     # dilutes the section and repeats the same analyst read. triage (rank by fit) and
