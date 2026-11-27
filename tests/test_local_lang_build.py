@@ -80,19 +80,22 @@ class TestProfileLocalFields:
         seen = {}
 
         def fake_chat(system, user, **kw):
+            if "news-search queries" in system:
+                seen["qsys"], seen["quser"] = system, user
+                return {"trigger_queries": ["retail expansion"],
+                        "industry_queries": ["retail trends"],
+                        "local_queries": ["nowy sklep", "wyposażenie sklepów"]}
             seen["user"] = user
             return {"value_prop": "Sells shop fittings.", "target_industries": ["Retail"],
                     "competitors": [{"name": "Rival One", "their_product": "shop fittings"}],
                     "industry_keywords": {"Retail": ["retail"]},
-                    "trigger_query_seeds": ["retail expansion"],
-                    "industry_query_seeds": ["retail trends"],
-                    "local_queries": ["nowy sklep", "wyposażenie sklepów"],
                     "local_competitor_names": {"rival one": "Rywal Jeden", "Ghost": "Duch"}}
 
         monkeypatch.setattr(tenant.llm, "chat_json", fake_chat)
         p = tenant.Profile.from_company("Acme Fixtures", country_name="Poland")
-        assert "Polish" in seen["user"] and "local_queries" in seen["user"]
-        assert "2 to 4 words" in seen["user"]
+        assert "Polish" in seen["user"] and "local_queries" not in seen["user"]
+        assert "Polish" in seen["quser"] and "local_queries" in seen["quser"]
+        assert "2 to 4 words" in seen["quser"]
         assert p.local_language == "Polish"
         assert p.local_queries == ["nowy sklep", "wyposażenie sklepów"]
         # only competitors that are actually in the final list are kept, keyed by English name

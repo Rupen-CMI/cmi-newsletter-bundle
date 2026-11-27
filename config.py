@@ -67,6 +67,45 @@ NON_BUYER_TERMS = (
     "department of", "task force", "research institute", "journal",
 )
 
+# Government bodies: never a rival, and a customer only for a lead whose profile lists a
+# government buyer (state water agencies, municipalities, local authorities...). For
+# everyone else they are filtered out of the customer and competitor pools before the
+# model sees them: grant schemes and ministry news filled the triage slots (Grow Partners'
+# top 10 were all government schemes). Industry Outlook keeps them -- new rules matter.
+GOV_TERMS = (
+    "government", "govt", "ministry", "minister", "city of", "city council", "municipal",
+    "municipality", "department of", "parliament", "senate", "local authority", "council",
+    "prefecture", "district of", "secretary", "defra", "european commission", "state agency",
+    "federal agency", "public authority",
+    "gouvernement", "ministère", "mairie", "ville de", "regierung", "ministerium", "gemeente",
+    "ministerie", "gobierno", "ministerio", "ayuntamiento", "governo", "ministero", "comune di",
+    "bakanlığı", "belediye",
+)
+_GOV_RE = None
+_GOV_BUYER_RE = None
+
+
+def is_government(text: str) -> bool:
+    """True when `text` (a headline or a name) names a government body."""
+    global _GOV_RE
+    import re
+    if _GOV_RE is None:
+        _GOV_RE = re.compile(r"(?<![\w])(?:" + "|".join(re.escape(t) for t in GOV_TERMS) + r")(?![\w])",
+                             re.I)
+    return bool(_GOV_RE.search(text or ""))
+
+
+def government_buyers_ok(profile) -> bool:
+    """True when the lead's own buyer industries include a government body."""
+    global _GOV_BUYER_RE
+    import re
+    if _GOV_BUYER_RE is None:
+        _GOV_BUYER_RE = re.compile(
+            r"government|municipal|local authorit|public (?:administration|sector|bod)|"
+            r"(?:state|government|public|water|development) agenc|tourism board|ministr|"
+            r"council|public utilit", re.I)
+    return any(_GOV_BUYER_RE.search(str(i)) for i in (getattr(profile, "industries", None) or []))
+
 # ── Trigger-event taxonomy (importance weight 0..1 + detection keywords) ─────
 # A "trigger" is a live event that creates immediate demand for market research
 # (funding needs market sizing; a trial needs competitive landscaping; etc.).
@@ -596,4 +635,8 @@ SOURCE_BLOCKLIST = sorted(set([s.lower() for s in RESEARCH_FIRM_SOURCES] + [
     "newscast.jp", "atpress", "@press", "dreamnews", "wiseguy", "marketbeat", "stocktitan",
     "simply wall st", "simplywall.st", "zacks", "证券之星", "东方财富", "stock titan",
     "der aktionär", "der aktionaer", "boerse express", "börse express",
+    # 2026-11-26 search audit: research-firm sites that leaked into the pool, and Facebook
+    # posts (Hindi edition) that are not a publisher
+    "market data forecast", "marketdataforecast", "global market insights", "gminsights",
+    "facebook",
 ]))

@@ -166,9 +166,10 @@ class Profile:
     buyer_functions: list = field(default_factory=list)  # who physically buys/uses the product
     profile_confidence: str = "normal"          # "low" when homepage text was missing/thin
     competitor_query_seeds: list = field(default_factory=list)  # generic category queries
+    product_category: str = ""                  # 1-3 words news uses: "EV charging", "IT services"
     # Local-language search (non-English markets only; "" / [] / {} for English markets).
     local_language: str = ""                    # e.g. "Polish"; "" when the market's language is English
-    local_queries: list = field(default_factory=list)    # 6-8 short queries in that language
+    local_queries: list = field(default_factory=list)    # 10-12 short queries in that language
     local_competitor_names: dict = field(default_factory=dict)  # english name -> name as written in local press
     # competitor name (as stored in `competitors`) -> other common written forms (English
     # form, local form, short form / acronym). Old stored profiles load with {}.
@@ -228,20 +229,17 @@ class Profile:
                 "Fix the lead's company upstream, or exclude it from this run.")
 
         local_lang = _local_language_for(market)
-        geo_line = (f" The target MARKET is {market}: prefer competitors, keywords and news queries "
-                    f"relevant to {market}." if market != "Global" else "")
+        in_market = f" in {market}" if market != "Global" else ""
+        # Rewritten 2026-11-26 as short plain rules for the 9B model; the long version with
+        # worked examples (AI waste SaaS, Laurus Labs vs Aroma) is in git history.
         system = (
-            "You are CoherentConnect, a B2B sales-intelligence engine. Given a SELLER company, infer its "
-            "sales-prospecting profile. CRITICAL DISTINCTION: a POTENTIAL CUSTOMER is a company that would BUY "
-            "the seller's product — it operates in the seller's CUSTOMER industries (its buyers), NOT in the "
-            "seller's OWN product category. A company that sells a similar/competing product is a COMPETITOR, "
-            "not a customer. So `target_industries` must be the industries of the seller's BUYERS, never the "
-            "seller's own category. Example: an AI waste-management/recycling SaaS sells TO consumer-goods "
-            "brands, manufacturers, retailers, packaging firms and municipalities (those are target_industries) "
-            "— other 'waste management' or 'recycling platform' companies are its COMPETITORS, never "
-            "target_industries. A 'buying trigger' is an event (funding, IPO, M&A, expansion, new plant, product "
-            "launch, regulatory/compliance obligation, big hire) at a BUYER that creates demand for what the "
-            "seller sells." + geo_line + " Return finished values — never placeholders, never angle brackets."
+            "You are a B2B sales researcher. Given a SELLER company, describe who it sells to, who it "
+            "competes with, and which news would show a buyer is ready to buy.\n"
+            "- A buyer is a company that would BUY the seller's product.\n"
+            "- A competitor sells the SAME kind of product as the seller. A competitor is never a buyer.\n"
+            "- A buying trigger is news at a buyer that creates demand for the seller's product "
+            "(expansion, new plant, funding, launch, new rules).\n"
+            "- Write finished values. No placeholders."
         )
         # Ground the inference in the seller's own homepage copy where we can reach it.
         # Without this the model profiles from the NAME alone and confidently invents a
@@ -283,97 +281,41 @@ class Profile:
         company = _fix_company_case(company, site_text)
 
         subject_line = (
-            f"MARKET: {company}\n(This is a market the reader enquired about, not a company. "
-            "Profile a typical company that sells in this market: value_prop describes "
-            "that market's products and buyers, and competitors are the market's leading "
+            f"MARKET: {company}\n(This is a market the reader asked about, not a company. Describe a "
+            "typical company that sells in this market; its competitors are the market's leading "
             "companies.)\n" if subject_is_market else f"SELLER: {company}\n")
         user = (
             subject_line + (f"WEBSITE: {website}\n" if website else "") +
-            (f"\nWHAT THEIR WEBSITE SAYS (authoritative -- prefer this over anything you "
-             f"think you know about the company; if it contradicts your assumption, the "
-             f"website is right):\n\"\"\"\n{site_text}\n\"\"\"\n\n" if site_text else "") +
+            (f"\nWEBSITE TEXT (trust this over what you think you know):\n\"\"\"\n{site_text}\n\"\"\"\n\n"
+             if site_text else "") +
             (f"TARGET MARKET: {market}\n" if market != "Global" else "") +
-            (f"ENQUIRY: the lead asked for a market report on \"{topic_hint.strip()}\". This often "
-             "reflects what the company makes or buys; use it as a hint only where the website or "
-             "name supports it.\n" if (topic_hint or "").strip() and not subject_is_market else "") +
-            "\nReturn a JSON object with keys:\n"
-            # The website's language used to leak into every value (a French site gave a
-            # French profile), and every later prompt then wrote in it.
-            "Write every value in English, even when the website is in another language."
-            + (" Only local_queries and local_competitor_names use the local language."
+            (f"ENQUIRY: the lead asked for a report on \"{topic_hint.strip()}\". Use it as a hint only "
+             "where the website agrees.\n" if (topic_hint or "").strip() and not subject_is_market else "") +
+            "\nReturn JSON with these keys. Write every value in English"
+            + (f", except local_competitor_names, which is in {local_lang}"
                if local_lang else "")
-            + "\n"
-            "  value_prop — one sentence: what the seller sells and to whom\n"
-            "  target_industries — 4 to 7 CUSTOMER verticals that BUY from the seller (its buyers). Do NOT list "
-            "the seller's own product category here.\n"
-            f"  competitors — 4 to 8 objects, each {{\"name\":\"...\", \"their_product\":\"...\"}}, for real "
-            f"companies in the seller's OWN product category that sell a directly substitutable "
-            f"product{' active in ' + market if market != 'Global' else ''}. \"their_product\" is a few words "
-            "stating what THIS company itself makes or sells, in its own right -- not the industry it serves, "
-            "not who buys from it. Same vertical only: a buyer chooses the seller OR this company, not both. "
-            "Name companies that sell the SAME PRODUCT TYPE stated in value_prop — if the seller makes a cell "
-            "therapy, list other cell-therapy developers, not contract manufacturers, not services firms, not "
-            "generics makers, however large or nearby they are. Before listing a name, check \"their_product\" "
-            "against value_prop yourself: if \"their_product\" is not substantially the same product type as "
-            "what the seller sells, do not include that company -- a pharmaceutical API/CDMO maker is not a "
-            "competitor to a fragrance/aromatics supplier just because both sell into pharmaceutical "
-            "manufacturing, a contract manufacturer is not a competitor to the brand it manufactures for, and a "
-            "company whose own product happens to be bought by one of the seller's buyer industries is a "
-            "potential CUSTOMER, not a rival, however similar the two industries sound. NEVER list a company "
-            "that belongs to any of the target_industries above. A large diversified group that merely operates "
-            "nearby (a generics major next to a cell-therapy developer, say) is NOT a competitor unless it "
-            "sells the same product category today. Never list the seller itself or one of its own "
-            "brands, and never a placeholder such as \"Company A\". Write each company's plain name "
-            "without adding a country to it (\"Stryker\", not \"Stryker India\").\n"
-            "  industry_keywords — object mapping each target_industry to a list of 6 to 10 lowercase "
-            "keywords/phrases that identify news about companies IN that buyer vertical\n"
-            "  trigger_query_seeds — 10 to 14 Google-News queries that surface BUYERS (companies in the "
-            "target_industries) with a live buying trigger — combine each buyer vertical with trigger words "
-            "(funding, raises, expansion, new plant, launches, compliance). Each trigger query pairs a buyer "
-            "industry with an event that creates demand for the seller's product (new plant, new production "
-            "line, capacity expansion, upgrade), never executive hires or appointments. Do NOT write queries "
-            "that surface the seller's competitors.\n"
-            "  industry_query_seeds — 5 to 7 Google-News queries for structural/industry-trend stories that "
-            "change what the seller's buyers expect\n"
-            "  lead_type — exactly one of: seller (sells products/services to businesses), investor "
-            "(VC, PE, fund, family office), nonprofit, education (university, school, research "
-            "institute), government (ministry, agency, public body)\n"
-            "  products — 3 to 8 objects, each {\"name\":\"...\", \"application\":\"...\"}, naming the "
-            "seller's OWN specific product lines or models as stated on its website (the "
-            "product line's own name, not the broad category it belongs to); \"application\" is a few words on what "
-            "that product is used for. Use only what the website text supports; return [] if it "
-            "names no products.\n"
-            "  buyer_functions — 2 to 6 short phrases naming WHO physically buys or uses the seller's "
-            "products inside a buyer organisation (the team, department or facility that specifies "
-            "or orders it, not the buyer's industry)\n"
-            "  competitor_query_seeds — 3 to 5 news-search queries that would surface ANY company's new "
-            "moves (launches, expansions, contracts, funding) in the seller's own product category, "
-            "written in generic category words, not company names. They must differ from "
-            "trigger_query_seeds: name the seller's OWN product category, never a buyer industry "
-            "(for an email provider: \"email service launch\", \"secure email funding\")."
-            + "\n  QUERY LENGTH — every English query in trigger_query_seeds, industry_query_seeds "
-              "and competitor_query_seeds must be SHORT: 2 to 4 words, the way a news headline would word "
-              "it. Long multi-clause queries return nothing. Do not put the market's country or "
-              "nationality in English queries: the country is added automatically when searching."
+            + ".\n"
+            "- value_prop: one sentence: what the seller sells and to whom.\n"
+            "- target_industries: 4 to 7 industries that BUY from the seller. Not the seller's own industry.\n"
+            f"- competitors: 4 to 8 real companies{in_market} that sell the same kind of product as the "
+            "seller, each {\"name\": \"...\", \"their_product\": \"what this company sells\"}. Leave out "
+            "any company whose product is a different type, any buyer, the seller itself and its brands. "
+            "Plain names, no country added.\n"
+            "- industry_keywords: for each target industry, 6 to 10 lowercase keywords for news about "
+            "companies in it.\n"
+            "- lead_type: one of seller, investor, nonprofit, education, government.\n"
+            "- products: 3 to 8 of the seller's own product lines from the website, each "
+            "{\"name\": \"...\", \"application\": \"what it is used for\"}. [] if the website names none.\n"
+            "- buyer_functions: 2 to 6 teams or roles inside a buyer that order the product.\n"
             + (
-                f"\n  local_queries — 6 to 8 SHORT news-search queries (2 to 3 words each) written in {local_lang}, "
-                f"as {local_lang}-language news headlines would word them: some for the seller's BUYERS and "
-                "their buying triggers (expansion, investment, new plant, funding), some for the seller's own "
-                "product category / industry, and one or two for the report-style market the seller operates "
-                f"in. Write them in {local_lang}, in the native script of that language, not translated word "
-                "for word from English. Never use the seller's own name or brands in local_queries.\n"
-                f"  local_competitor_names — object mapping each competitor name in `competitors` to the name "
-                f"as {local_lang}-language press writes it: native script where the language does not use the "
-                "Latin alphabet (Chinese, Japanese, Korean, Arabic, Cyrillic, etc.); the same string as the "
-                "English name when the press keeps it unchanged."
+                f"\n- local_competitor_names: each competitor name as {local_lang} news writes it (native "
+                "script where the language uses one)."
                 if local_lang else "")
-            + "\n  competitor_aliases — object mapping each competitor name in `competitors` to a list of 1 to 3 "
-              "OTHER forms that company is commonly written as in news: its English form when the name above is "
-              "an official or foreign-language form, its local-language form, and its short form or acronym. "
-              "Return [] for a company that is always written the same way. Real forms only, no guesses."
+            + "\n- competitor_aliases: for each competitor, 1 to 3 other names news uses for it (English "
+              "form, local form, short form or acronym), or [] if none. Real forms only."
         )
         data = llm.chat_json(system, user, temperature=0,
-                             max_tokens=3200 if local_lang else 2500, default={}) or {}
+                             max_tokens=2500 if local_lang else 2000, default={}) or {}
 
         industries = _as_str_list(data.get("target_industries"))[:7]
         # competitors is now a list of {"name", "their_product"} objects, not bare
@@ -470,8 +412,16 @@ class Profile:
         if ov.get("industries"):
             industries = _as_str_list(ov["industries"])[:7]
 
-        trig = _as_str_list(data.get("trigger_query_seeds"))[:14]
-        indq = _as_str_list(data.get("industry_query_seeds"))[:7]
+        # Search queries come from their own small call (write_search_queries), made after
+        # the profile call; an empty/failed result falls through to the fallbacks below.
+        try:
+            q = write_search_queries(
+                (ov.get("value_prop") or "").strip() or (data.get("value_prop") or "").strip(),
+                industries, competitors, market, local_lang)
+        except Exception:  # noqa: BLE001 -- queries are optional; never fail the profile
+            q = {}
+        trig = list(q.get("trigger_queries") or [])[:12]
+        indq = list(q.get("industry_queries") or [])[:7]
 
         # Fallbacks so the pipeline always has something to search/score.
         if not industries:
@@ -532,11 +482,12 @@ class Profile:
             products = [p for p in products if _product_grounded(p["name"], site_text)]
         products = products[:8]
         buyer_functions = _as_str_list(data.get("buyer_functions"))[:6]
-        competitor_query_seeds = _as_str_list(data.get("competitor_query_seeds"))[:5]
+        competitor_query_seeds = list(q.get("competitor_query_seeds") or [])[:5]
+        product_category = str(q.get("product_category") or "").strip()
         local_queries: list[str] = []
         local_competitor_names: dict[str, str] = {}
         if local_lang:
-            local_queries = _as_str_list(data.get("local_queries"))[:8]
+            local_queries = list(q.get("local_queries") or [])[:12]
             raw_ln = data.get("local_competitor_names")
             if isinstance(raw_ln, dict):
                 # Keep only entries for competitors actually in the final list (the list
@@ -556,6 +507,7 @@ class Profile:
             market=market, lead_type=lead_type, products=products,
             buyer_functions=buyer_functions,
             competitor_query_seeds=competitor_query_seeds,
+            product_category=product_category,
             local_language=local_lang, local_queries=local_queries,
             local_competitor_names=local_competitor_names,
             competitor_aliases=competitor_aliases,
@@ -564,6 +516,110 @@ class Profile:
         tidy_profile(profile, website=website)
         _drop_inactive_rivals(profile, conn)
         return profile
+
+
+# ---- search-query writer ----------------------------------------------------
+_VAGUE_QUERY_WORDS = frozenset({
+    "spending", "trading", "programme", "program", "sector", "market", "markets", "trends",
+    "trend", "outlook", "policy", "industry", "growth"})
+
+
+def _query_problem(q: str) -> str:
+    """"" if an English query passes the deterministic check, else why it fails."""
+    words = q.split()
+    if len(words) > 4:
+        return "too long"
+    if {w.strip(".,;:!?\"'()").lower() for w in words} & _VAGUE_QUERY_WORDS:
+        return "vague"
+    return ""
+
+
+def _check_queries(data, local_lang: str = "") -> tuple[dict, set]:
+    """Deterministic clean-up of a write_search_queries result. Returns (clean dict,
+    set of problems seen: "too long" / "vague")."""
+    data = data if isinstance(data, dict) else {}
+    problems: set = set()
+    seen: set = set()
+    out: dict = {}
+    for key, cap in (("trigger_queries", 12), ("industry_queries", 7),
+                     ("competitor_query_seeds", 5)):
+        keep = []
+        for q in _as_str_list(data.get(key)):
+            why = _query_problem(q)
+            if why:
+                problems.add(why)
+                continue
+            if q.lower() in seen:
+                continue
+            seen.add(q.lower())
+            keep.append(q)
+        out[key] = keep[:cap]
+    out["product_category"] = " ".join(str(data.get("product_category") or "").split()[:3])
+    local, lseen = [], set()
+    if local_lang:
+        for q in _as_str_list(data.get("local_queries")):
+            if len(q.split()) > 4:
+                problems.add("too long")
+            elif q.lower() not in lseen:
+                lseen.add(q.lower())
+                local.append(q)
+    out["local_queries"] = local[:12]
+    return out, problems
+
+
+def write_search_queries(value_prop: str, industries: list, competitors: list,
+                         market: str = "Global", local_lang: str = "") -> dict:
+    """Write the news-search queries in their own small LLM call (the big profile call gave
+    them too little attention). Returns {trigger_queries, industry_queries,
+    competitor_query_seeds, product_category, local_queries}, already run through the
+    deterministic check. If fewer than 6 buyer searches survive, asks once more with a
+    line naming the problem and keeps whichever result has more valid queries."""
+    system = (
+        "You write news-search queries for a B2B sales researcher. Follow the rules exactly. "
+        "Write every value in English"
+        + (f", except local_queries, which are in {local_lang}" if local_lang else "") + ".")
+    names = ", ".join(c for c in (competitors or []) if isinstance(c, str))[:300]
+    user = (
+        f"SELLER SELLS: {value_prop}\n"
+        f"BUYER INDUSTRIES: {'; '.join(industries or [])}\n"
+        f"COMPETITORS: {names or 'none'}\n"
+        + (f"COUNTRY: {market}\n" if market and market != "Global" else "")
+        + "\nReturn JSON with these keys.\n"
+        "- trigger_queries: 10 to 12 searches. Each is a buyer from the buyer industries, in that "
+        "trade's own noun, plus one event that buyer does (opens, builds, buys, wins, launches, raises).\n"
+        "- industry_queries: 5 to 7 searches. Each is a concrete change in the buyers' trade, in that "
+        "trade's own words.\n"
+        "- competitor_query_seeds: 3 to 5 searches about moves in the seller's own product category, in "
+        "generic words. Never a company name.\n"
+        "- product_category: 1 to 3 words naming what the seller and its competitors sell.\n"
+        "Every English search is 2 to 4 words and uses words with one meaning. Do not use these words: "
+        "spending, trading, programme, sector, market, trends, outlook, policy, industry, growth. "
+        "No abbreviations. No country name."
+        + (f"\n- local_queries: 10 to 12 searches of 2 to 3 words in {local_lang}, in its native script. "
+           "Mostly a buyer plus an event." if local_lang else ""))
+
+    def _count(d):
+        return sum(len(d[k]) for k in ("trigger_queries", "industry_queries",
+                                       "competitor_query_seeds", "local_queries"))
+
+    def _ask(u):
+        raw = llm.chat_json(system, u, temperature=0,
+                            max_tokens=1800 if local_lang else 1200, default={}) or {}
+        return _check_queries(raw, local_lang)
+
+    best, problems = _ask(user)
+    if len(best["trigger_queries"]) < 6:
+        notes = []
+        if "too long" in problems:
+            notes.append("some searches were too long")
+        if "vague" in problems:
+            notes.append("some searches used the banned words")
+        if not notes:
+            notes.append("there were too few buyer searches")
+        second, _ = _ask(user + "\nLast time " + " and ".join(notes) + ". Fix that.")
+        if _count(second) > _count(best):
+            best = second
+    return best
 
 
 def _drop_inactive_rivals(profile, conn) -> None:
@@ -763,7 +819,9 @@ def rival_forms(profile, name: str) -> list[str]:
 
 def _rival_base(s: str) -> str:
     s = re.sub(r"\s*[(\[][^)\]]*[)\]]", " ", s or "").lower()
-    s = re.sub(r"[^a-z0-9 ]", "", s)
+    # Unicode letters, not just a-z: "엠디엠그룹" / "東京センチュリー" used to reduce to "" and
+    # could never match a Korean or Japanese headline (2026-11-26 search audit).
+    s = re.sub(r"[^\w ]|_", "", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -775,7 +833,7 @@ def name_matches(name: str, text: str, *, strict_short: bool = False) -> bool:
     if not b or not tx:
         return False
     if strict_short and len(b) <= 5:
-        return bool(re.search(r"(?<![a-z0-9])" + re.escape(b) + r"(?![a-z0-9])", tx))
+        return bool(re.search(r"(?<!\w)" + re.escape(b) + r"(?!\w)", tx))
     if b in tx:
         return True
     head = " ".join(b.split()[:2])

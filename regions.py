@@ -376,7 +376,7 @@ _ROWS = [
     ("JO", "Jordan", "Middle East", ["jordanian", "jordanians", "jordan's",
      "kingdom of jordan"], "jordanian",
      ["amman"], ["jordanian dinar", "jod"], [".jo"]),
-    ("TR", "Turkey", "Middle East", ["turkish", "turks", "turkiye"], "turkish",
+    ("TR", "Turkey", "Middle East", ["turkish", "turks", "turkiye", "türkiye", "türkei"], "turkish",
      ["istanbul", "ankara", "izmir"], ["turkish lira"], [".com.tr", ".tr"]),
     ("CY", "Cyprus", "Middle East", ["cypriots"], "cypriot",
      ["nicosia", "limassol"], _EUR, [".cy"]),

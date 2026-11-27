@@ -15,7 +15,7 @@ def _capture_from_company(monkeypatch, **kw):
     seen = {}
 
     def fake_chat_json(system, user, **k):
-        seen["system"], seen["user"] = system, user
+        seen.setdefault("system", system); seen.setdefault("user", user)  # profile call only
         return {}
     monkeypatch.setattr(llm, "chat_json", fake_chat_json)
     monkeypatch.setattr(tenant, "fetch_site_text", lambda *a, **k: "We make sunbeds and roof boxes. " * 20)

@@ -188,16 +188,17 @@ class TestPlanSearches:
         jobs, _ = C.plan_searches(p, config.get_country("Germany"))
         qs = [q for q, *_ in jobs]
         assert "German telecom merger" in qs and "fintech funding Germany" in qs
-        assert "Kollmorgen India Germany" in qs
+        assert '"Kollmorgen India" Germany' in qs          # rival names are quoted
         jobs_in, _ = C.plan_searches(p, config.get_country("India"))
-        assert "Kollmorgen India" in [q for q, *_ in jobs_in]
+        assert '"Kollmorgen India"' in [q for q, *_ in jobs_in]
 
-    def test_anchor_skips_seller_product(self):
+    def test_rival_query_is_quoted_name_without_product(self):
+        # the "rival + our product" query was dropped: 63% returned nothing (2026-11-26)
         p = _profile(competitors=["Tutanota"],
                      products=[{"name": "GMX Cloud"}, {"name": "Secure Mailbox"}])
         qs = [q for q, *_ in C.plan_searches(p, config.get_country("Germany"))[0]]
-        assert "Tutanota Secure Mailbox Germany" in qs
-        assert not any("GMX Cloud" in q for q in qs)
+        assert '"Tutanota" Germany' in qs
+        assert not any("GMX Cloud" in q or "Secure Mailbox" in q for q in qs)
 
 
 # ── scoring ──────────────────────────────────────────────────────────────────

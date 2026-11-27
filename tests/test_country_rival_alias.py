@@ -165,12 +165,14 @@ def test_triage_stores_event_country_and_customer_skips_foreign():
     p = _profile(market="South Korea", industries=["Pharma"], competitors=[])
     cands = [_art("Alpha plant expands", bucket="trigger", trigger_type="expansion"),
              _art("Beta plant expands", bucket="trigger", trigger_type="expansion")]
-    items = [{"index": 0, "company_name": "Alpha Foods", "relationship": "buyer",
-              "event_country": "Germany", "would_buy": "pharma packaging"},
-             {"index": 1, "company_name": "Beta Foods", "relationship": "buyer",
-              "event_country": "South Korea", "would_buy": "pharma packaging"}]
+    items = [{"index": 0, "company_name": "Alpha Foods", "relationship": "buyer"},
+             {"index": 1, "company_name": "Beta Foods", "relationship": "buyer"}]
+    # triage labels, then the pick call: Alpha first (in Germany, skipped), then Beta
+    replies = [{"items": items},
+               {"best": 0, "event_country": "Germany", "would_buy": "pharma packaging"},
+               {"best": 0, "event_country": "South Korea", "would_buy": "pharma packaging"}]
     picked = {}
-    with mock.patch.object(bb.llm, "chat_json", return_value={"items": items}), \
+    with mock.patch.object(bb.llm, "chat_json", side_effect=replies), \
             mock.patch.object(bb, "_write_card",
                               side_effect=lambda a, n, *r: picked.update(n=n) or {"company_name": n}), \
             mock.patch.object(bb.free_research, "enrich_company", return_value={}), \

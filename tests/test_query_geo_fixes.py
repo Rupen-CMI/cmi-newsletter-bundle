@@ -66,7 +66,7 @@ class TestForeignQueryDropped:
         C.collect(p, _korea())
         queries = [c["query"] for c in calls]
         assert not any("food safety standards India" in q for q in queries)
-        assert "bottled water safety South Korea" in queries
+        assert "bottled water safety Korea" in queries
 
     def test_lead_country_query_is_kept(self, monkeypatch):
         calls = _record_jobs(monkeypatch)
@@ -116,15 +116,15 @@ class TestCompetitorQuerySeeds:
         seed_calls = [c for c in calls if c["bucket"] == "competitor"
                       and "bottled water recall" in c["query"]]
         assert seed_calls, calls
-        assert seed_calls[0]["query"] == "bottled water recall South Korea"
-        assert any(c["query"] == "mineral water plant expansion South Korea"
+        assert seed_calls[0]["query"] == "bottled water recall Korea"
+        assert any(c["query"] == "mineral water plant expansion Korea"
                    for c in calls)
 
     def test_seeds_use_the_long_competitor_cutoff(self, monkeypatch):
         calls = _record_jobs(monkeypatch)
         p = _profile(competitor_query_seeds=["bottled water recall"])
         C.collect(p, _korea())
-        call = next(c for c in calls if c["query"] == "bottled water recall South Korea")
+        call = next(c for c in calls if c["query"] == "bottled water recall Korea")
         age_days = (datetime.now(timezone.utc) - call["cutoff"]).days
         # every bucket now looks back ~182 days.
         assert age_days >= 150, age_days

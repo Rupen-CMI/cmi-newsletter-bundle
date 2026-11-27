@@ -111,9 +111,9 @@ def test_cands_block_and_single_signal_carry_scores():
     a = _art("Stryker launches new surgical robot", "competitor", "Stryker Ireland", days=3)
     es.score_evidence([a], _profile())
     block = bb._cands_block([a])
-    assert "RELEVANCY:" in block and "RECENCY:" in block and "3 days old" in block
+    assert "FIT:" in block and "AGE: 3 days" in block
     assert "SCORE:" not in block
-    assert "RELEVANCY (0-1)" in bb._SCORE_NOTE and "below 0.30" in bb._SCORE_NOTE
+    assert "FIT (0 to 1)" in bb._SCORE_NOTE
 
 
 # Root-cause fixes from the manual review

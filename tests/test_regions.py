@@ -374,18 +374,16 @@ class TestAnchoredTopicQueries:
     def test_country_name_appended_to_every_query(self):
         from collect import anchored_topic_queries, topic_queries
 
-        qs = topic_queries("Stem Cells Market")
+        # one anchored form per country word (the per-ending forms mostly repeated plain ones)
         aq = anchored_topic_queries("Stem Cells Market", {"name": "Morocco"})
-        assert len(aq) == len(qs)
-        assert f"{topic_queries('Stem Cells Market')[0]} Morocco" in aq
+        assert aq == [f"{topic_queries('Stem Cells Market')[0]} Morocco"]
 
     def test_demonym_form_for_two_queries(self):
         from collect import anchored_topic_queries, topic_queries
 
         aq = anchored_topic_queries(
             "Autonomous Vessels", {"name": "India", "nationality": "Indian"})
-        assert "autonomous vessels indian" in [q.lower() for q in aq]
-        assert "autonomous vessels industry indian" in [q.lower() for q in aq]
+        assert [q.lower() for q in aq] == ["autonomous vessels india", "autonomous vessels indian"]
 
     def test_georgia_country_anchor_present(self):
         """Bare "Georgia" is not a detection token — the anchor match must come

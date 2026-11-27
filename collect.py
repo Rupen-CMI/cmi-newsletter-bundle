@@ -8,8 +8,10 @@ import concurrent.futures as cf
 import hashlib
 import math
 import re
+import threading
 import time
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 
@@ -75,9 +77,14 @@ def _story_key(title: str) -> str:
     flooding the eligible pool with near-identical copies -- e.g. 8 outlets all
     reporting the same Dr Reddy's/Takeda dengue-vaccine deal each got a distinct
     exact-title fingerprint and all 8 counted as separate signals."""
-    words = re.findall(r"[a-z0-9']+", (title or "").lower())
-    sig = sorted({w for w in words if w not in _STOPWORDS and len(w) > 2})
-    return " ".join(sig)
+    # Unicode words: the old [a-z0-9'] pattern reduced a Korean, Japanese or Arabic
+    # headline to "" (dropped) or to a year/stock code/brand ("2026", "8439", "hdc"), so
+    # unrelated local stories merged -- Korea's local results went 716 -> 77. Digit-only
+    # tokens are ignored, and a key with fewer than 2 words is not trusted (callers keep
+    # the article; the embedding collapse merges real cross-outlet copies).
+    words = re.findall(r"\w+", unicodedata.normalize("NFKC", title or "").lower())
+    sig = sorted({w for w in words if w not in _STOPWORDS and len(w) > 2 and not w.isdigit()})
+    return " ".join(sig) if len(sig) >= 2 else ""
 
 
 def _collapse_near_duplicates(articles: list["Article"]) -> list["Article"]:
@@ -87,9 +94,8 @@ def _collapse_near_duplicates(articles: list["Article"]) -> list["Article"]:
     bucket_rank = {"trigger": 0, "competitor": 1, "industry": 2}
     best: dict[str, "Article"] = {}
     for a in articles:
-        key = _story_key(a.title)
-        if not key:
-            continue
+        # no trustworthy key: keep the article under its own fingerprint, never drop it
+        key = _story_key(a.title) or f"fp:{a.fingerprint or id(a)}"
         cur = best.get(key)
         if cur is None:
             best[key] = a
@@ -183,8 +189,42 @@ def _source_of(entry, fallback: str) -> str:
     return fallback
 
 
+# One fetch per search per run. stage_generate collects a lead's company news separately for
+# its signal and its report brief (same profile, same queries), and leads of one company share
+# every query: ~42% of a run's Google requests were repeats (2026-11-26 count). Results are kept
+# for _FETCH_CACHE_TTL seconds; a second caller gets its own copies with its own bucket.
+_FETCH_CACHE: dict[tuple, tuple[float, list]] = {}
+_FETCH_INFLIGHT: dict[tuple, "threading.Event"] = {}
+_FETCH_LOCK = threading.Lock()
+_FETCH_CACHE_TTL = 6 * 3600
+
+
 def _fetch_one(query: str, bucket: str, cutoff: datetime, locale: tuple,
                when_days: int = 0) -> list[Article]:
+    key = (query, tuple(locale), when_days, cutoff.date().isoformat())
+    while True:
+        with _FETCH_LOCK:
+            hit = _FETCH_CACHE.get(key)
+            if hit and time.time() - hit[0] < _FETCH_CACHE_TTL:
+                return [replace(a, bucket=bucket) for a in hit[1]]
+            ev = _FETCH_INFLIGHT.get(key)
+            if ev is None:                        # this caller fetches; others wait for it
+                ev = _FETCH_INFLIGHT[key] = threading.Event()
+                break
+        ev.wait(120)
+    try:
+        got = _fetch_one_uncached(query, bucket, cutoff, locale, when_days)
+        with _FETCH_LOCK:
+            _FETCH_CACHE[key] = (time.time(), [replace(a) for a in got])
+        return got
+    finally:
+        with _FETCH_LOCK:
+            _FETCH_INFLIGHT.pop(key, None)
+        ev.set()
+
+
+def _fetch_one_uncached(query: str, bucket: str, cutoff: datetime, locale: tuple,
+                        when_days: int = 0) -> list[Article]:
     hl, gl, ceid = locale
     # "when:Nd" goes into the URL only: Article.query stays the clean query (evidence_score reads it).
     q_url = f"{query} when:{when_days}d" if when_days > 0 else query
@@ -253,12 +293,28 @@ def _foreign_query_countries(query: str, lead_iso2: str) -> set[str]:
     return regions.countries_in_text(query) - {lead_iso2}
 
 
-def _keep_lead_queries(queries, lead_iso2: str, dropped: list) -> list[str]:
-    """Drop profile-written queries that name a country other than the lead's.
-    Appends (query, foreign_isos) to `dropped` for the caller's log/count."""
+_SEARCH_COUNTRY_NAME = {"United Kingdom": "UK", "United Arab Emirates": "UAE",
+                        "South Korea": "Korea", "Turkey": "Türkiye"}
+
+_REGION_WORDS = re.compile(r"\b(gcc|gulf|middle east|mena|emea|europe|european|dach|nordics?|"
+                           r"benelux|apac|asia[- ]pacific|asean|latin america|latam|africa)\b", re.I)
+
+
+def _region_neighbours(profile, lead_iso2: str) -> set[str]:
+    """Countries in the lead's own region when the seller says it sells across that region
+    ("in the GCC"): a query naming Saudi Arabia is then the seller's market, not a leak."""
+    if not lead_iso2 or not _REGION_WORDS.search(getattr(profile, "value_prop", "") or ""):
+        return set()
+    region = regions.region_of(lead_iso2)
+    return {iso for iso, p in regions._PROFILES.items() if p.get("region") == region} if region else set()
+
+
+def _keep_lead_queries(queries, lead_iso2: str, dropped: list, allowed: set | None = None) -> list[str]:
+    """Drop profile-written queries that name a country other than the lead's (and other
+    than `allowed` neighbours). Appends (query, foreign_isos) to `dropped`."""
     kept: list[str] = []
     for q in (queries or []):
-        foreign = _foreign_query_countries(q, lead_iso2)
+        foreign = _foreign_query_countries(q, lead_iso2) - (allowed or set())
         if foreign:
             dropped.append((q, sorted(foreign)))
         else:
@@ -290,7 +346,12 @@ def plan_searches(profile, country: dict | None = None
     """
     locale = (country or config.COUNTRIES["Global"]).get("gn", config.GN_DEFAULT_LOCALE)
     cname = (country or {}).get("name", "Global")
-    suffix = "" if cname in ("", "Global") else f" {cname}"   # e.g. "biotech funding India"
+    # e.g. "biotech funding India". A short form where news uses one: the full name starved
+    # UK queries ("heat network greenhouse United Kingdom" 5 results vs 44) and "Turkey"
+    # matched Thanksgiving turkey. Each short form is still read as the country by
+    # regions.countries_in_text, which geo.filter_for_lead relies on.
+    sname = _SEARCH_COUNTRY_NAME.get(cname, cname)
+    suffix = "" if cname in ("", "Global") else f" {sname}"
 
     lead_iso2 = _lead_iso2(country)
 
@@ -300,42 +361,37 @@ def plan_searches(profile, country: dict | None = None
         return q + suffix
 
     dropped: list[tuple[str, list[str]]] = []
-    trig_qs = _keep_lead_queries(profile.trigger_queries, lead_iso2, dropped)
-    ind_qs = _keep_lead_queries(profile.industry_queries, lead_iso2, dropped)
+    allowed = _region_neighbours(profile, lead_iso2)
+    trig_qs = _keep_lead_queries(profile.trigger_queries, lead_iso2, dropped, allowed)
+    ind_qs = _keep_lead_queries(profile.industry_queries, lead_iso2, dropped, allowed)
     seed_qs = _keep_lead_queries(getattr(profile, "competitor_query_seeds", None),
-                                lead_iso2, dropped)
+                                lead_iso2, dropped, allowed)
 
-    # Competitor queries pair each rival with the seller's product category where one is
-    # curated. Searching a bare company name returns whatever that company is biggest in:
-    # "Novartis India" surfaced a generics acquisition, so the Competition Outlook for a
-    # CAR-T maker was about blood-pressure brands. Anchoring the query to the shared
-    # category is what makes the returned signal comparable.
+    # Competitor queries: the rival's name in quotes plus the country. Measured on the 15
+    # test leads (2026-11-26): quoting raised the share of top-10 headlines that name the
+    # rival from 35% to 47% with the same number of rival hits; it stops "Var Group"
+    # matching VAR referees and "ZIM" matching Zimbabwe. The old "rival + our first product"
+    # query is gone: 63% of those returned nothing, because the product was usually our own
+    # brand ("Thule Traxer", "Reply DG Suite"), and the rest were less on target than the name.
     comp_jobs = []
-    try:
-        import tenant as _tenant
-        _terms = (_tenant._overrides_for(getattr(profile, "company", "")) or {}).get("product_terms") or []
-    except Exception:  # noqa: BLE001 -- enrichment is optional, never fatal
-        _terms = []
-    anchor = _terms[0] if _terms else ""
-    if not anchor:
-        # No curated terms: anchor on the first product the profile names -- never one
-        # carrying the seller's own brand ("Tutanota GMX Cloud" searches for GMX).
-        import competitor_score as _cs
-        for _p in (getattr(profile, "products", None) or []):
-            _n = ((_p.get("name") if isinstance(_p, dict) else str(_p or "")) or "").strip()
-            if _n and not _cs.is_seller(_n, profile):
-                anchor = _n
-                break
+    # A quoted name alone is ambiguous: "\"FLO\" Canada" also finds Flo Rida,
+    # "\"Almaviva\" Italy" the opera. One product-category word fixes that
+    # ("\"FLO\" EV charging Canada"), so use it when the profile has one.
+    product_category = (getattr(profile, "product_category", "") or "").strip()
     for c in profile.competitors:
-        if anchor:
-            comp_jobs.append((_sfx(f"{c} {anchor}"), "competitor"))
-        comp_jobs.append((_sfx(c), "competitor"))       # plain name too, as a fallback
+        comp_jobs.append((_sfx(f'"{c}" {product_category}' if product_category
+                               else f'"{c}"'), "competitor"))
         # Other written forms of the same rival (English form of a local official name,
-        # short form): press in English often uses a form the profile did not store.
+        # short form). Skipped: a form that is just the name shortened or lengthened (same
+        # results), and a non-Latin form (it returns nothing on the English edition; the
+        # local pass searches it).
         for alias in (getattr(profile, "competitor_aliases", None) or {}).get(c, [])[:2]:
             alias = (alias or "").strip()
-            if alias and alias.lower() != c.lower():
-                comp_jobs.append((_sfx(alias), "competitor"))
+            a_low, c_low = alias.lower(), c.lower()
+            if (not alias or a_low == c_low or c_low.startswith(a_low + " ")
+                    or a_low.startswith(c_low + " ") or _non_latin(alias)):
+                continue
+            comp_jobs.append((_sfx(f'"{alias}"'), "competitor"))
 
     # Profile-written generic category queries (competitor_query_seeds): "surface ANY
     # company's new X" searches. They fill the competitor bucket without naming a
@@ -353,21 +409,45 @@ def plan_searches(profile, country: dict | None = None
     # Local-language pass: every non-English market also gets its queries run on the
     # country's own-language Google News edition (config.LOCAL_NEWS_EDITIONS), which the
     # regional-source experiments showed surfaces far more relevant evidence than the
-    # English edition. No country-name suffix (the query is already local-language and the
-    # edition is country-scoped). Bucket choice: profile.local_queries are written buyers/
-    # triggers FIRST, then category/industry/market, so the first half goes to the trigger
-    # bucket and the rest to the industry bucket; local competitor names go to competitor.
-    # Same cutoffs and same foreign-country query filter as the English pass.
+    # English edition (77% of headlines on target against 49%). No country-name suffix (the
+    # query is already local-language and the edition is country-scoped). A local query
+    # with a buying-event word goes to the trigger bucket, the rest to industry; for a
+    # language the event list does not cover, the old split applies (the profile writes
+    # buyer queries first). Local competitor names go to competitor.
     local_edition = (getattr(config, "LOCAL_NEWS_EDITIONS", None) or {}).get(cname)
     if local_edition:
-        lq = _keep_lead_queries(getattr(profile, "local_queries", None), lead_iso2, dropped)
+        lq = _keep_lead_queries(getattr(profile, "local_queries", None), lead_iso2, dropped, allowed)
+        by_event = any(_LOCAL_EVENT_RE.search(q) for q in lq)
         n_trig = (len(lq) + 1) // 2
         for i, q in enumerate(lq):
-            jobs.append((q, "trigger" if i < n_trig else "industry", tuple(local_edition), cname))
+            trig = bool(_LOCAL_EVENT_RE.search(q)) if by_event else i < n_trig
+            jobs.append((q, "trigger" if trig else "industry", tuple(local_edition), cname))
         for loc in (getattr(profile, "local_competitor_names", None) or {}).values():
             if (loc or "").strip():
                 jobs.append((loc.strip(), "competitor", tuple(local_edition), cname))
     return jobs, dropped
+
+
+# Buying-event words in the local editions' languages. A local query with one is a buyer
+# query (trigger bucket): BIL's "Börsengang Schweiz" (IPO) and Blue Matter's "फार्मा
+# अधिग्रहण" (pharma acquisition) were filed under industry by the old half/half split.
+_LOCAL_EVENT_RE = re.compile(
+    r"(?:\b(?:invest\w*|lance\w*|ouvr\w*|inaugur\w*|rach[eè]t\w*|acqui\w*|alli\w*|sign\w*|"
+    r"rempor\w*|nouvel\w*|nouveau\w*|ampli\w*|lanza\w*|abre|abr\w*|adquier\w*|firma\w*|"
+    r"inversi[oó]n|nuev[oa]s?|eröffn\w*|übernimm\w*|übernahme|startet|baut|neue[snr]?|"
+    r"förder\w*|finanzier\w*|börsengang|investeer\w*|opent|nieuwe?|overname|lanceer\w*|"
+    r"stabiliment\w*|nuov[oa]|apr\w*|acquisi\w*|gara|yat[ıi]r[ıi]m\w*|fabrika\w*|ihale\w*|"
+    r"a[cç][ıi]l[ıi][sş]\w*|recharge|flotte|subvention\w*)\b"
+    r"|투자|착공|개소|출시|인수|수주|설립|증설|확장|신설|개발|"
+    r"新設|建設|着工|開設|投資|発注|買収|出資|開業|増設|計画|"
+    r"افتتاح|استثمار|إطلاق|توسع|استحواذ|مشروع|"
+    r"निवेश|लॉन्च|अधिग्रहण|विस्तार|प्लांट|फंडिंग)", re.I)
+
+
+def _non_latin(s: str) -> bool:
+    """True when the text is written mostly in a non-Latin script (Hangul, kana, Arabic...)."""
+    letters = [ch for ch in s if ch.isalpha()]
+    return bool(letters) and sum(ord(ch) > 0x24F for ch in letters) > len(letters) / 2
 
 
 def _when(hours: float) -> int:
@@ -391,6 +471,25 @@ _NOT_COMPANY = {
 }
 _GENERIC_NAME = {"indian", "global", "top", "new", "leading", "major", "big", "local", "world",
                  "firm", "company", "group", "india", "asia", "europe", "us", "uk", "eu"}
+# Words that make a "name" a headline fragment, not a company (audit 2026-11-26: "How",
+# "Partner", "Boston Days After He", "Rain Could Complicate Holiday", "Ottawa Looks",
+# "Penalties As EU Textile Rules", "Singapore-Backed Asset Manager"...). Any token in this
+# set rejects the name. Title-Case headlines make every word look like a proper noun.
+_HARVEST_STOP = {
+    "how", "why", "what", "where", "when", "who", "which", "this", "that", "these", "those",
+    "after", "before", "as", "amid", "could", "would", "should", "will", "may", "might", "can",
+    "he", "she", "they", "it", "its", "his", "her", "their", "we", "our", "you", "your",
+    "looks", "wants", "says", "said", "seeks", "days", "rules", "planned", "budget", "cuts",
+    "partner", "partners", "insight", "insights", "million", "billion", "here", "there",
+    "more", "most", "first", "every", "asset", "manager", "portfolio", "backed", "penalties",
+    "office", "secretary", "fund", "programme", "program", "institute", "association",
+    "dr", "mr", "mrs", "ms", "ceo", "founder", "chairman", "dermatologist", "doctor",
+    "data", "laboratories", "labs", "party", "ukri", "mohammed", "mohammad",
+}
+# Direction words that, next to a country, make a place ("South Korea", "Western Australia").
+_PLACE_WORDS = {"north", "south", "east", "west", "northern", "southern", "eastern", "western",
+                "central", "new", "greater", "upper", "lower"}
+_HARVEST_RESULTS_CAP = 25    # articles kept per harvested name (junk names returned 100 each)
 
 
 def harvest_buyers(articles, profile, country: dict | None = None, limit: int = 0) -> list[str]:
@@ -400,6 +499,9 @@ def harvest_buyers(articles, profile, country: dict | None = None, limit: int = 
         return []
     import competitor_score
     import tenant
+    # A bank is a non-buyer for most sellers, but a buyer for a bank's supplier (Kirey).
+    inds = " ".join(str(i) for i in (getattr(profile, "industries", None) or [])).lower()
+    not_company = _NOT_COMPANY - ({"bank"} if "bank" in inds else set())
     found: dict[str, dict] = {}
     for a in articles:
         if a.bucket not in ("trigger", "industry"):
@@ -414,13 +516,21 @@ def harvest_buyers(articles, profile, country: dict | None = None, limit: int = 
                 break
             run.insert(0, tok)
         name = re.sub(r"\s*\(India\)", "", " ".join(run)).strip(" .,-&")
+        name = re.sub(r"^\S+-based\s+", "", name, flags=re.I)    # "Paris-based Apolownia"
         toks = name.split()
-        if len(name) < 3 or not toks or any(t.lower().strip(".") in _NOT_COMPANY for t in toks):
+        low = [t.lower().strip(".,") for t in toks]
+        if len(name) < 3 or not toks or any(t in not_company for t in low):
             continue
-        if len(toks) == 1 and toks[0].lower() in _GENERIC_NAME:
+        if len(toks) == 1 and low[0] in _GENERIC_NAME:
             continue
+        if any(t in _HARVEST_STOP for t in low) or any(re.fullmatch(r"(?:19|20)\d\d", t) for t in low):
+            continue                      # a headline fragment or an event ("... 2026")
         if regions.countries_in_text(name):
-            left = [t for t in toks if not regions.countries_in_text(t)]
+            # Reject a place: only country words plus direction words ("South Korea",
+            # "Western Australia", "Türkiye"). "Tokyo Tatemono" keeps its distinctive word.
+            left = [t for t, l in zip(toks, low) if not regions.countries_in_text(t)
+                    and l not in _PLACE_WORDS]
+            # all place words, or a place only as a whole phrase ("Tamil Nadu")
             if not left or len(left) == len(toks):
                 continue
         if competitor_score.is_seller(name, profile):
@@ -433,7 +543,19 @@ def harvest_buyers(articles, profile, country: dict | None = None, limit: int = 
         d["t"] = max(d["t"], a.published)
     searched = " ".join((profile.trigger_queries or []) + (profile.industry_queries or [])).lower()
     ranked = sorted(found.values(), key=lambda d: (-d["n"], -d["t"].timestamp()))
-    return [d["name"] for d in ranked if d["name"].lower() not in searched][:limit]
+    out: list[str] = []
+    for d in ranked:
+        n = d["name"]
+        if n.lower() in searched:
+            continue
+        # one slot per company: "Purina" / "Nestlé Purina", "Alibaba" / "Alibaba Cloud"
+        if any(re.search(rf"\b{re.escape(o.lower())}\b", n.lower())
+               or re.search(rf"\b{re.escape(n.lower())}\b", o.lower()) for o in out):
+            continue
+        out.append(n)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def collect(profile, country: dict | None = None, *, log=None, conn=None) -> list[Article]:
@@ -475,36 +597,67 @@ def collect(profile, country: dict | None = None, *, log=None, conn=None) -> lis
         _hrs = {"competitor": getattr(config, "COMPETITOR_LOOKBACK_HOURS", config.LOOKBACK_HOURS),
                 "trigger": _tl}
         futs = {ex.submit(_fetch_one, q, b, _cut(b), loc,
-                          _when(_hrs.get(b, config.LOOKBACK_HOURS))): tag
+                          _when(_hrs.get(b, config.LOOKBACK_HOURS))): (q, b, loc, tag)
                 for q, b, loc, tag in jobs}
+        empty_rivals: list[tuple[str, tuple]] = []
         for fut in cf.as_completed(futs):
+            job_q, job_b, job_loc, job_tag = futs[fut]
             try:
                 got = fut.result()
             except Exception:
                 continue
-            if futs[fut]:
+            if job_tag:
                 # Record the market on a local-edition hit's query: the edition IS the
                 # country (gl=), and geo.filter_for_lead trusts a country word in `query`
                 # for articles whose text names no place (local text rarely says "Poland").
                 for a in got:
-                    a.query = f"{a.query} {futs[fut]}"
+                    a.query = f"{a.query} {job_tag}"
                     a.edition_iso2 = lead_iso2
+            elif job_b == "competitor" and not got:
+                empty_rivals.append((job_q, job_loc))
             articles.extend(got)
     articles = _drop_blocked(articles)
+
+    # Rival queries carry the product category to disambiguate them (plan_searches), but
+    # a niche rival can return nothing that way where the plain quoted name finds news.
+    # Retry exactly those empty queries without the category; the results are still
+    # competitor news (the plain name is the old, broader search).
+    _pc = (getattr(profile, "product_category", "") or "").strip()
+    _cname = (country or {}).get("name", "Global")
+    _rsfx = "" if _cname in ("", "Global") else f" {_SEARCH_COUNTRY_NAME.get(_cname, _cname)}"
+    if _pc and empty_rivals:
+        plain_jobs = []
+        for q, loc in empty_rivals:
+            if not q.startswith('"'):
+                continue
+            if _rsfx and q.endswith(f" {_pc}{_rsfx}"):
+                plain_jobs.append((q[:-len(f" {_pc}{_rsfx}")] + _rsfx, loc))
+            elif q.endswith(f" {_pc}"):
+                plain_jobs.append((q[:-len(f" {_pc}")], loc))
+        if plain_jobs:
+            if log:
+                log(f"  collect: {len(plain_jobs)} rival query/queries empty with the product "
+                    "category, retrying the plain name")
+            when = _when(getattr(config, "COMPETITOR_LOOKBACK_HOURS", config.LOOKBACK_HOURS))
+            with cf.ThreadPoolExecutor(max_workers=8) as ex:
+                for got in ex.map(lambda j: _fetch_one(j[0], "competitor", comp_cutoff, j[1], when),
+                                  plain_jobs):
+                    articles.extend(got)
+            articles = _drop_blocked(articles)
 
     # Second pass: search each buyer company named in a first-pass headline by name.
     names = harvest_buyers(articles, profile, country, getattr(config, "HARVEST_BUYERS", 0))
     if names:
         locale = (country or config.COUNTRIES["Global"]).get("gn", config.GN_DEFAULT_LOCALE)
         cname = (country or {}).get("name", "Global")
-        sfx = "" if cname in ("", "Global") else f" {cname}"
+        sfx = "" if cname in ("", "Global") else f" {_SEARCH_COUNTRY_NAME.get(cname, cname)}"
         qs = [f'"{n}"' + ("" if sfx and lead_iso2 and lead_iso2 in regions.countries_in_text(n)
                           else sfx) for n in names]
         if log:
             log(f"  collect: harvested buyers {names}")
         with cf.ThreadPoolExecutor(max_workers=8) as ex:
             for got in ex.map(lambda q: _fetch_one(q, "trigger", trig_cutoff, locale, _when(_tl)), qs):
-                articles.extend(got)
+                articles.extend(got[:_HARVEST_RESULTS_CAP])
         articles = _drop_blocked(articles)
     LAST_HARVESTED[:] = names
 
@@ -551,7 +704,15 @@ def topic_subject(topic: str, iso2: str = "") -> str:
     words = [w for w in re.split(r"[\s\-–—:|/]+", raw) if w]
     kept = [w for w in words if w.lower().strip(".,") not in _TOPIC_NOISE
             and not re.fullmatch(r"[\d.,]+", w)]
+    # Lead topics arrive title-cased ("Phytochemical Api", "Ev Charging Station", "Gcc
+    # Outbound Tourism"); acronyms go back to capitals so news search reads them as terms.
+    kept = [w.upper() if w.lower() in _TOPIC_ACRONYMS else w for w in kept]
     return " ".join(kept).strip() or (topic or "").strip()
+
+
+_TOPIC_ACRONYMS = {"api", "apis", "ev", "evs", "gcc", "ai", "iot", "hvac", "led", "uav", "lng",
+                   "lpg", "pcb", "erp", "crm", "saas", "ict", "b2b", "mena", "uae", "5g", "rfid",
+                   "cnc", "plc", "scada", "ivd", "cro", "cdmo", "ar", "vr"}
 
 
 def translate_topic(subject: str, language: str) -> str:
@@ -580,13 +741,28 @@ def _bing_title_split(title: str) -> tuple[str, str]:
     return title.strip(), ""
 
 
-def _fetch_bing(query: str, bucket: str, cutoff: datetime) -> list[Article]:
+def _bing_market(country: dict | None) -> str:
+    """Bing market code for the lead's country ("es-ES", "en-GB"), "" for Global. Without
+    one Bing answers from the machine's location: 77 of 184 topic results were about
+    India for leads in other countries (2026-11-26 audit)."""
+    iso2 = _lead_iso2(country)
+    if not iso2:
+        return ""
+    local = (getattr(config, "LOCAL_NEWS_EDITIONS", None) or {}).get((country or {}).get("name", ""))
+    lang = (local[0].split("-")[0] if local else "en")
+    return f"{lang}-{iso2}"
+
+
+def _fetch_bing(query: str, bucket: str, cutoff: datetime, market: str = "") -> list[Article]:
     """Bing News RSS: a second free engine. Unlike Google News RSS (whose 'summary' is
     the headline again, 99% of the time), Bing returns the article's opening lines, and
-    its links carry the publisher's real URL in a `url=` parameter."""
+    its links carry the publisher's real URL in a `url=` parameter. `market` ("es-ES")
+    sets Bing's region."""
     from urllib.parse import parse_qs, urlparse
 
     url = config.BING_NEWS.format(q=quote_plus(query))
+    if market:
+        url += f"&mkt={market}&cc={market.split('-')[-1]}"
     out: list[Article] = []
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": config.HTTP_UA})
@@ -762,8 +938,9 @@ def enrich_texts(articles: list[Article], per_bucket: int = 8, max_workers: int 
 def topic_queries(topic: str, iso2: str = "") -> list[str]:
     """Search strings about the SUBJECT of a market, worded the way reporters write."""
     s = topic_subject(topic, iso2)
-    return [s, f"{s} industry", f"{s} manufacturers", f"{s} demand supply",
-            f"{s} expansion investment", f"{s} regulation policy"]
+    # "manufacturers", "demand supply" and "regulation policy" were dropped (2026-11-26
+    # audit): mostly research-firm "Market Size 2034" pages, or nothing at all.
+    return [s, f"{s} industry", f"{s} expansion investment"]
 
 
 def anchored_topic_queries(topic: str, country: dict | None, iso2: str = "") -> list[str]:
@@ -782,11 +959,13 @@ def anchored_topic_queries(topic: str, country: dict | None, iso2: str = "") -> 
     cname = ((country or {}).get("name") or "").strip()
     if not cname or cname == "Global":
         return []
-    qs = topic_queries(topic, iso2)
-    out = [f"{q} {cname}" for q in qs]
+    # Two forms only: the anchored versions of every ending added 29% new headlines and
+    # 17 of 75 were empty (2026-11-26 count) -- they mostly repeat the plain queries.
+    s = topic_subject(topic, iso2)
+    out = [f"{s} {_SEARCH_COUNTRY_NAME.get(cname, cname)}"]
     demonym = ((country or {}).get("nationality") or "").strip().lower()
     if demonym:
-        out += [f"{q} {demonym}" for q in qs[:2]]
+        out.append(f"{s} {demonym}")
     return out
 
 
@@ -816,10 +995,19 @@ def collect_topic(topic: str, country: dict | None = None, local_topic: str = ""
     cname = ((country or {}).get("name") or "").strip()
     local_edition = (getattr(config, "LOCAL_NEWS_EDITIONS", None) or {}).get(cname)
     local_q = (local_topic or "").strip()
+    when = _when(config.TOPIC_LOOKBACK_HOURS)
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
-        futs = [ex.submit(_fetch_one, q, "industry", cutoff, locale, _when(config.TOPIC_LOOKBACK_HOURS))
-                for q in qs + aq]
-        futs += [ex.submit(_fetch_bing, q, "industry", cutoff) for q in qs[:4]]
+        # Plain queries first; the country-anchored form only for subjects that have news
+        # at all (Bimed's 8 anchored "Cable Glands Turkey" queries all came back empty).
+        plain = list(ex.map(lambda q: _fetch_one(q, "industry", cutoff, locale, when), qs))
+        for got in plain:
+            articles.extend(got)
+        if any(plain):
+            aq = [q for q in aq if any(q.startswith(p) and plain[i] for i, p in enumerate(qs))]
+        else:
+            aq = []
+        futs = [ex.submit(_fetch_one, q, "industry", cutoff, locale, when) for q in aq]
+        futs += [ex.submit(_fetch_bing, q, "industry", cutoff, _bing_market(country)) for q in qs]
         local_futs = []
         if local_edition and local_q:
             local_futs = [ex.submit(_fetch_one, local_q, "industry", cutoff, tuple(local_edition),
@@ -838,7 +1026,8 @@ def collect_topic(topic: str, country: dict | None = None, local_topic: str = ""
     # real text, and on a tie prefer the country-ANCHORED copy — its `query` field
     # then names the country, which is exactly the evidence geo.filter_for_lead's
     # no-geo rule looks for.
-    _anchor_toks = [t for t in (((country or {}).get("name") or "").lower().strip(),
+    _cn = ((country or {}).get("name") or "").strip()
+    _anchor_toks = [t for t in (_cn.lower(), _SEARCH_COUNTRY_NAME.get(_cn, "").lower(),
                                 ((country or {}).get("nationality") or "").lower().strip()) if t]
 
     def _anchored(a: Article) -> bool:
@@ -847,9 +1036,7 @@ def collect_topic(topic: str, country: dict | None = None, local_topic: str = ""
 
     best: dict[str, Article] = {}
     for a in articles:
-        key = _story_key(a.title)
-        if not key:
-            continue
+        key = _story_key(a.title) or f"fp:{a.fingerprint or a.url}"    # never drop on no key
         cur = best.get(key)
         if cur is None or (_anchored(a) and not _anchored(cur)):
             best[key] = a

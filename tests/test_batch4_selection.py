@@ -21,18 +21,28 @@ def _prof(market="United States", **kw):
                            competitors=[], **kw)
 
 
-def test_triage_stores_would_buy(monkeypatch):
+def test_triage_uses_trained_prompt_and_returns_labels_only(monkeypatch):
+    import json
     a = _art("Acme Retail opens 40 stores")
-    reply = {"items": [{"index": 0, "company_name": "Acme Retail", "relationship": "buyer",
-                        "event_country": "United States", "would_buy": " fast chargers "}]}
-    monkeypatch.setattr(llm, "chat_json", lambda *x, **k: reply)
+    seen = {}
+
+    def fake(system, user, **k):
+        seen["s"], seen["u"] = system, user
+        return {"items": [{"index": 0, "company_name": "Acme Retail", "relationship": "buyer"}]}
+    monkeypatch.setattr(llm, "chat_json", fake)
     rel, cands = brief_builder.triage_triggers([a], _prof())
     assert rel[0] == ("Acme Retail", "buyer")
-    assert cands[0].would_buy == "fast chargers"
+    trained = json.loads(open("training_data/v4/test_triage.jsonl", encoding="utf-8").readline())
+    head = trained["system"].split("SELLER:")[0]
+    tail = trained["system"].split("STEP 1")[1]
+    assert seen["s"].startswith(head) and seen["s"].endswith(tail)
+    assert seen["u"].endswith(trained["user"][trained["user"].index("Return JSON"):])
+    assert "| SCORE: " in seen["u"] and "| TRIGGER: " in seen["u"]
 
 
-def _run_customer(monkeypatch, arts, rel, profile=None):
-    monkeypatch.setattr(brief_builder, "triage_triggers", lambda t, p: (rel, arts))
+def _run_customer(monkeypatch, arts, rel, pick=(0, "United States", "fast chargers"), profile=None):
+    monkeypatch.setattr(brief_builder, "triage_triggers", lambda t, p: (rel, arts[:10]))
+    monkeypatch.setattr(brief_builder, "_pick_buyer", lambda buyers, p: pick)
     monkeypatch.setattr(brief_builder, "_rank_by_evidence", lambda t: t)
     monkeypatch.setattr(free_research, "enrich_company", lambda *a, **k: {})
     monkeypatch.setattr(brief_builder, "_write_card", lambda *a, **k: {"company": a[1]})
@@ -41,32 +51,30 @@ def _run_customer(monkeypatch, arts, rel, profile=None):
     return out, logs
 
 
-def test_buyer_without_would_buy_skipped(monkeypatch):
-    a = _art("Acme Retail opens stores in Texas, United States"); a.would_buy = ""
-    a.event_country = "United States"
-    (card, art, _), logs = _run_customer(monkeypatch, [a], {0: ("Acme Retail", "buyer")})
-    assert card is None and any("no product it would buy" in l for l in logs)
+def test_no_card_when_model_picks_none(monkeypatch):
+    a = _art("Acme Retail opens stores in Texas, United States")
+    (card, art, _), logs = _run_customer(monkeypatch, [a], {0: ("Acme Retail", "buyer")}, pick=(-1, "", ""))
+    assert card is None and any("no buyer fits" in l for l in logs)
 
 
 def test_other_never_chosen(monkeypatch):
-    a = _art("Pope Packaging expands plant in United States"); a.would_buy = "x"
-    a.event_country = "United States"
+    a = _art("Pope Packaging expands plant in United States")
     (card, art, _), _ = _run_customer(monkeypatch, [a], {0: ("Pope Packaging", "other")})
     assert card is None and art is None
 
 
 def test_foreign_unknown_country_skipped(monkeypatch):
     a = _art("Lionfish raises pre-seed in Singapore", "Singapore startup funding")
-    a.would_buy = "chargers"; a.event_country = "unknown"
-    (card, _, _), logs = _run_customer(monkeypatch, [a], {0: ("Lionfish", "buyer")})
-    assert card is None and any("not in the lead's country" in l for l in logs)
+    (card, _, _), logs = _run_customer(monkeypatch, [a], {0: ("Lionfish", "buyer")},
+                                       pick=(0, "unknown", "chargers"))
+    assert card is None and any("skipped" in l for l in logs)
 
 
 def test_in_country_buyer_chosen(monkeypatch):
     a = _art("Acme Retail opens 40 stores across the United States")
-    a.would_buy = "fast chargers"; a.event_country = "unknown"
-    (card, art, _), _ = _run_customer(monkeypatch, [a], {0: ("Acme Retail", "buyer")})
-    assert card["company"] == "Acme Retail" and art is a
+    (card, art, _), _ = _run_customer(monkeypatch, [a], {0: ("Acme Retail", "buyer")},
+                                      pick=(0, "unknown", "fast chargers"))
+    assert card["company"] == "Acme Retail" and art is a and a.would_buy == "fast chargers"
 
 
 def test_low_confidence_skips_competition(monkeypatch):

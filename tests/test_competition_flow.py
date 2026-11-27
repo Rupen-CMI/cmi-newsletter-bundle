@@ -70,17 +70,17 @@ def test_none_pass_returns_none():
 
 def test_on_category_ranked_first_when_both_pass():
     arts = [_art("Acme Widgets sells shoes", 9), _art("Acme Widgets launches Zeta Widget 2", 1)]
-    out, judged = _run(arts, [], lambda t: True)
-    assert judged[0][0] == "Acme Widgets launches Zeta Widget 2"
+    out, judged = _run(arts, [], lambda t: True)     # pick call fails -> top-ranked
     assert out[1].title == "Acme Widgets launches Zeta Widget 2"
 
 
-def test_only_top_eight_judged_and_deduped():
-    arts = [_art(f"Acme Widgets story {i}", i) for i in range(10)]
-    arts.append(_art("acme widgets story 9!", 99))   # duplicate title
+def test_top_candidates_judged_and_deduped():
+    n = bb._COMPETITION_JUDGE_TOP
+    arts = [_art(f"Acme Widgets story {i}", i) for i in range(n + 2)]
+    arts.append(_art(f"acme widgets story {n + 1}!", 99))   # duplicate title
     out, judged = _run(arts, [], lambda t: False)
-    assert len(judged) == 8
-    assert len({t.lower().strip("!") for t, _ in judged}) == 8
+    assert len(judged) == n
+    assert len({t.lower().strip("!") for t, _ in judged}) == n
 
 
 def test_query_seeds_default_and_from_dict():

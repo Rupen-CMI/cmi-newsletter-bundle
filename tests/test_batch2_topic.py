@@ -76,9 +76,9 @@ def test_build_brief_no_on_topic_skips_section(monkeypatch):
 def test_cands_block_location_only_when_outside():
     a, b, c = _art("A"), _art("B", geo_scope="region"), _art("C", geo_scope="country")
     txt = brief_builder._cands_block([a, b, c]).split("\n[")
-    assert "LOCATION: outside" not in txt[0]
-    assert "LOCATION: outside" in txt[1]
-    assert "LOCATION: outside" not in txt[2]
+    assert "OUTSIDE THE READER'S COUNTRY" not in txt[0]
+    assert "OUTSIDE THE READER'S COUNTRY" in txt[1]
+    assert "OUTSIDE THE READER'S COUNTRY" not in txt[2]
 
 
 def test_translate_topic_failure_returns_empty(monkeypatch):
