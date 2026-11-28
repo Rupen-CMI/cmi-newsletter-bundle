@@ -105,7 +105,7 @@ def test_enrich_texts_picks_by_score_and_replaces_only_longer(monkeypatch):
         fetched.append(a.title)
         return BODY if a.title != "T5" else "short"
     monkeypatch.setattr(collect, "_article_text_src",
-                        lambda a, timeout: (fake(a), "page"))
+                        lambda a, timeout, resolve=True: (fake(a), "page"))
     n = collect.enrich_texts(arts, per_bucket=2)
     # trigger: T5, T4 by ev score; industry: Ind
     assert sorted(fetched) == ["Ind", "T4", "T5"]

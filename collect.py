@@ -804,6 +804,71 @@ def _is_gnews(url: str) -> bool:
     return "news.google.com" in (url or "").lower()
 
 
+_GN_LOCK = threading.Lock()
+_GN_CACHE: dict[str, str] = {}
+_GN_STATE = {"last": 0.0, "until": 0.0}
+# One lookup at a time, 1 s apart: measured 2026-11-27, 40/40 sequential lookups at this pace
+# passed, while 4 parallel lookups 0.5 s apart hit 429 after ~4.
+_GN_GAP = 1.0
+_GN_PAUSE = 60.0   # after a 429, skip lookups for this long (callers fall back to Bing)
+
+
+def _resolve_gnews(url: str, timeout: int = 8) -> str:
+    """Publisher URL behind a news.google.com/rss/articles/<id> link ("" on failure).
+
+    Google News RSS links redirect through JavaScript, so plain requests never reach the
+    article. The id is resolved the way the Google News web page does it: read the
+    signature and timestamp from the article page, then ask the batchexecute endpoint.
+    Measured 2026-11-27 on 12 Test15 card links: 12/12 resolved. Unofficial endpoint: lookups
+    run one at a time, and a 429 pauses them for _GN_PAUSE seconds; callers fall back to Bing meanwhile."""
+    import json as _json
+    import requests
+    from urllib.parse import quote, urlparse
+    if not _is_gnews(url):
+        return ""
+    gid = urlparse(url).path.rstrip("/").split("/")[-1]
+    with _GN_LOCK:
+        if gid in _GN_CACHE:
+            return _GN_CACHE[gid]
+        if time.time() < _GN_STATE["until"]:
+            return ""
+        wait = _GN_STATE["last"] + _GN_GAP - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        real = ""
+        try:
+            r = requests.get(f"https://news.google.com/rss/articles/{gid}",
+                             headers=_BROWSER_HEADERS, timeout=timeout)
+            if r.status_code == 429:
+                _GN_STATE["until"] = time.time() + _GN_PAUSE
+                return ""
+            sg = re.search(r'data-n-a-sg="([^"]+)"', r.text)
+            ts = re.search(r'data-n-a-ts="([^"]+)"', r.text)
+            if sg and ts:
+                req = ["Fbv4je",
+                       '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,'
+                       'null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],'
+                       f'"{gid}",{ts.group(1)},"{sg.group(1)}"]']
+                r2 = requests.post(
+                    "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                    headers={**_BROWSER_HEADERS,
+                             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                    data="f.req=" + quote(_json.dumps([[req]])), timeout=timeout)
+                if r2.status_code == 429:
+                    _GN_STATE["until"] = time.time() + _GN_PAUSE
+                    return ""
+                body = _json.loads(r2.text.split("\n\n")[1])[:-2]
+                cand = _json.loads(body[0][2])[1]
+                if isinstance(cand, str) and cand.startswith("http") and not _is_gnews(cand):
+                    real = cand
+        except Exception:  # noqa: BLE001 -- best-effort, Bing fallback follows
+            real = ""
+        finally:
+            _GN_STATE["last"] = time.time()
+        _GN_CACHE[gid] = real
+        return real
+
+
 def _same_as_title(text: str, title: str) -> bool:
     import difflib
     return difflib.SequenceMatcher(None, text.lower()[:len(title) + 40], title.lower()).ratio() >= 0.8
@@ -856,12 +921,17 @@ def _title_key(t: str) -> str:
     return t.replace("’", "'").replace("‘", "'").lower().strip()
 
 
-def _article_text_src(a: Article, timeout: int) -> tuple[str, str]:
+def _article_text_src(a: Article, timeout: int, resolve: bool = True) -> tuple[str, str]:
     """(text, "page"|"bing"|"") -- see fetch_article_text."""
     import difflib
     text = ""
-    if a.url and not _is_gnews(a.url):
-        text = _page_text(a.url, timeout)
+    url = a.url
+    if resolve and _is_gnews(url):
+        url = _resolve_gnews(url, timeout)
+        if url:
+            a.url = url   # the brief links the publisher, not a Google redirect
+    if url and not _is_gnews(url):
+        text = _page_text(url, timeout)
     if _same_as_title(text, a.title):
         text = ""
     if len(text) >= 120:
@@ -903,10 +973,36 @@ def fetch_article_text(a: Article, *, timeout: int = 8) -> str:
         return ""
 
 
+def _fill_one(a: Article, timeout: int = 8, resolve: bool = True) -> int:
+    try:
+        text, src = _article_text_src(a, timeout, resolve=resolve)
+        if text and len(text) >= len(a.summary or "") + 40:
+            a.summary = text
+            a.text_source = src or "bing"
+            return 1
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def fill_text(articles: list[Article], max_workers: int = 4) -> int:
+    """Fetch text for the articles a card is about to be written from. enrich_texts covers
+    the top 8 per bucket before selection, but the model often picks rank 15-40: 26/29
+    customer cards in the 2026-11-26 Test15 runs were written from the headline alone.
+    Articles that already have text are skipped."""
+    todo = [a for a in articles if a is not None and not getattr(a, "text_source", "")]
+    if not todo:
+        return 0
+    with cf.ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(todo)))) as ex:
+        return sum(ex.map(_fill_one, todo))
+
+
 def enrich_texts(articles: list[Article], per_bucket: int = 8, max_workers: int = 8) -> int:
     """Replace headline-only summaries with fetched text for the articles that matter:
     top `per_bucket` per bucket by evidence score, plus the top 8 by topic relevance
-    (report briefs). Returns how many summaries were replaced."""
+    (report briefs). Returns how many summaries were replaced. Google News links are not
+    resolved here (about 30 articles per brief would queue behind the one-at-a-time
+    resolver); fill_text resolves them for the picked articles."""
     picked: list[Article] = []
     seen: set[int] = set()
 
@@ -926,19 +1022,8 @@ def enrich_texts(articles: list[Article], per_bucket: int = 8, max_workers: int 
     if not picked:
         return 0
 
-    def work(a: Article) -> int:
-        try:
-            text, src = _article_text_src(a, 8)
-            if text and len(text) >= len(a.summary or "") + 40:
-                a.summary = text
-                a.text_source = src or "bing"
-                return 1
-        except Exception:  # noqa: BLE001
-            pass
-        return 0
-
     with cf.ThreadPoolExecutor(max_workers=max(1, max_workers)) as ex:
-        return sum(ex.map(work, picked))
+        return sum(ex.map(lambda a: _fill_one(a, resolve=False), picked))
 
 
 def topic_queries(topic: str, iso2: str = "") -> list[str]:

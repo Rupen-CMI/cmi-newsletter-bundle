@@ -12,6 +12,7 @@ import collect
 import compose
 import config
 import db
+import filters
 import geo
 import pipeline
 import render
@@ -54,6 +55,8 @@ def _setup(monkeypatch, collect_calls):
     monkeypatch.setattr(collect, "collect", fake_collect)
     monkeypatch.setattr(collect, "plan_searches", lambda *a, **k: ([("q", "trigger", (), "")], []))
     monkeypatch.setattr(geo, "filter_for_lead", lambda arts, *a, **k: (arts, "country"))
+    # Layer 1 drops two-word titles like "T1" as bare titles; this test is about evidence files.
+    monkeypatch.setattr(filters, "apply_l1", lambda arts: (arts, []))
     monkeypatch.setattr(score, "score_all", lambda arts, profile, topic="": arts)
     import brief_builder
 

@@ -14,6 +14,7 @@ tenant-specific facts come from a `tenant.Profile`, so this works for ANY seller
 """
 from __future__ import annotations
 import re
+import os
 import concurrent.futures as cf
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -578,6 +579,7 @@ def build_customer(triggers: list[Article], profile, log=print, competitor_arts=
     art, company = chosen
     log(f"    · free-research: {company}")
     enr = free_research.enrich_company(company, config.get_country(getattr(profile, "market", "Global")))
+    _ensure_text([art])
     card = _write_card(art, company, "customer", enr, profile)
     card["_sources"] = enr.get("sources_used", [])
     card["_free_research"] = free_research.context_block(enr)
@@ -775,6 +777,7 @@ def build_competition(competitor_arts: list[Article], peer_arts, profile, log=pr
         log(f"    · pick: {comp} | {art.title[:60]}")
         log(f"    · free-research: {comp}")
         enr = free_research.enrich_company(comp, config.get_country(getattr(profile, "market", "Global")))
+        _ensure_text([art])
         card = _write_card(art, comp, "competitor", enr, profile)
         if card is None:
             log(f"    · {comp}'s signal is not a real competitive move -- trying next candidate")
@@ -821,6 +824,18 @@ def _chat_guarded(system: str, user: str, *, max_tokens: int, profile=None) -> d
 
 
 # ── Shared card writer (customer or competitor) ──────────────────────────────
+def _ensure_text(arts) -> None:
+    """Real article text for the picked items, right before a card is written (see
+    collect.fill_text). Off when text fetching is off and in frozen-evidence replay."""
+    if not config.FETCH_ARTICLE_TEXT or os.environ.get("CMI_EVIDENCE_DIR"):
+        return
+    try:
+        import collect
+        collect.fill_text(list(arts))
+    except Exception:  # noqa: BLE001 -- never fail the brief
+        pass
+
+
 def _write_card(article: Article, name: str, kind: str, enr: dict, profile) -> dict:
     a = article
     ind = _industry_of(a, profile)
@@ -976,6 +991,7 @@ def synthesize_news(arts: list[Article], profile, market_topic: str = "") -> lis
     this prompt ever told the model what topic it was supposed to be on."""
     if not arts:
         return []
+    _ensure_text(arts)
     system = (
         f"You are a market editor for {profile.company} ({profile.short}). {profile.short} sells: "
         f"{profile.value_prop}\n"
